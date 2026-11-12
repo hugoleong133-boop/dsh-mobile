@@ -1,0 +1,4 @@
+﻿状态: Running
+主机名: windows
+tailnet 地址: http://windows.tailcddd89.ts.net:8765/?k=338599
+tailscale IP: http://100.126.113.122:8765/?k=338599

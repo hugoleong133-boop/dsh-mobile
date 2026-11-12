@@ -173,8 +173,13 @@ $url = if ($PublicUrl) { "$PublicUrl/?k=$effectivePin" } else { "${scheme}://${l
 $tailnetUrl = $null
 $ts = Get-Command tailscale -ErrorAction SilentlyContinue
 if (-not $ts) {
-  $localTs = Join-Path $here 'tools\tailscale.exe'
-  if (Test-Path $localTs) { $ts = $localTs }
+  foreach ($candidate in @(
+      (Join-Path $env:ProgramFiles 'Tailscale\tailscale.exe'),
+      (Join-Path ${env:ProgramFiles(x86)} 'Tailscale\tailscale.exe'),
+      (Join-Path $here 'tools\tailscale.exe')
+    )) {
+    if ($candidate -and (Test-Path $candidate)) { $ts = $candidate; break }
+  }
 }
 if ($ts) {
   try {

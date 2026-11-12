@@ -37,3 +37,6 @@ Thumbs.db
 tools/tailscale-setup-amd64.msi
 tools/tailscale*.exe
 tailnet-address.txt
+idx*.html
+shot-*.png
+funnel-url.txt

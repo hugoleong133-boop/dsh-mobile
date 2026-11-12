@@ -113,4 +113,16 @@ html[data-dshm-keyboard] #root {
   [class*='_trailing'] > * {
     flex-shrink: 0;
   }
+
+  /*
+   * standardControls 是一整组（回退/清洗面板/Hook 拦截/数据库 …），实测 307px。
+   * 组本身不换行的话，插件多挂一个按钮就会整组顶出去，所以让它内部也能折。
+   */
+  [class*='_standardControls'] {
+    flex-wrap: wrap !important;
+    justify-content: flex-end;
+    row-gap: 6px;
+    min-width: 0;
+    max-width: 100%;
+  }
 }

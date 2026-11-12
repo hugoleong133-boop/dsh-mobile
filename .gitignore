@@ -42,3 +42,5 @@ shot-*.png
 funnel-url.txt
 diag.jsonl
 diag.prev.jsonl
+dsh.css
+*.bak-*

@@ -299,11 +299,84 @@ struct WebContainer: UIViewRepresentable {
                 return
             }
             if target.scheme == "http" || target.scheme == "https" || target.scheme == "about" {
+                // target=_blank 不实现 createWebView 的话点了没反应，这里改成同窗口打开
+                if navigationAction.targetFrame == nil {
+                    webView.load(navigationAction.request)
+                    decisionHandler(.cancel)
+                    return
+                }
                 decisionHandler(.allow)
                 return
             }
             UIApplication.shared.open(target)
             decisionHandler(.cancel)
+        }
+
+        // MARK: - 原生对话框
+        //
+        // WKWebView 不会自动处理 alert / confirm / prompt：
+        // 不实现这些回调时，confirm() 直接返回 false、alert() 被静默丢弃。
+        // 插件里「删除会话（含子会话）」就是靠 confirm 二次确认的，
+        // 少了这一层，点了等于立刻取消 —— 表现就是「按钮没反应」。
+
+        private func topViewController() -> UIViewController? {
+            let scene = UIApplication.shared.connectedScenes
+                .compactMap { $0 as? UIWindowScene }
+                .first { $0.activationState == .foregroundActive }
+                ?? UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
+            var controller = scene?.windows.first(where: \.isKeyWindow)?.rootViewController
+            while let presented = controller?.presentedViewController {
+                controller = presented
+            }
+            return controller
+        }
+
+        private func present(_ alert: UIAlertController, fallback: @escaping () -> Void) {
+            guard let host = topViewController() else {
+                fallback()
+                return
+            }
+            host.present(alert, animated: true)
+        }
+
+        func webView(_ webView: WKWebView,
+                     runJavaScriptAlertWithMessage message: String,
+                     initiatedByFrame frame: WKFrameInfo,
+                     completionHandler: @escaping () -> Void) {
+            let alert = UIAlertController(title: nil, message: message, preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "好", style: .default) { _ in completionHandler() })
+            present(alert) { completionHandler() }
+        }
+
+        func webView(_ webView: WKWebView,
+                     runJavaScriptConfirmWithMessage message: String,
+                     initiatedByFrame frame: WKFrameInfo,
+                     completionHandler: @escaping (Bool) -> Void) {
+            let alert = UIAlertController(title: nil, message: message, preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "取消", style: .cancel) { _ in completionHandler(false) })
+            alert.addAction(UIAlertAction(title: "确定", style: .destructive) { _ in completionHandler(true) })
+            present(alert) { completionHandler(false) }
+        }
+
+        func webView(_ webView: WKWebView,
+                     runJavaScriptTextInputPanelWithPrompt prompt: String,
+                     defaultText: String?,
+                     initiatedByFrame frame: WKFrameInfo,
+                     completionHandler: @escaping (String?) -> Void) {
+            let alert = UIAlertController(title: nil, message: prompt, preferredStyle: .alert)
+            alert.addTextField { field in field.text = defaultText }
+            alert.addAction(UIAlertAction(title: "取消", style: .cancel) { _ in completionHandler(nil) })
+            alert.addAction(UIAlertAction(title: "确定", style: .default) { _ in
+                completionHandler(alert.textFields?.first?.text)
+            })
+            present(alert) { completionHandler(nil) }
+        }
+
+        /// 网页进程被系统回收（内存压力）时自动重载，否则会停在白屏
+        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+            loadedKey = ""
+            parent.failure = nil
+            webView.reload()
         }
     }
 }

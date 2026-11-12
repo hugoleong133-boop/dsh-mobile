@@ -1,0 +1,26 @@
+name: probe-runners
+
+# 一次性探测：这台账号/这个仓库到底能用哪些 GitHub-hosted runner 标签。
+# 不支持的标签会在 1 秒内被取消；能用的会跑出 uname 与 xcodebuild -version。
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-13, macos-14-intel, macos-15-intel, macos-14, macos-15, ubuntu-latest]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Identity
+        run: |
+          echo "runner=${{ matrix.runner }}"
+          uname -a
+      - name: Xcode
+        if: runner.os == 'macOS'
+        run: |
+          xcodebuild -version || true
+          xcrun --sdk iphoneos --show-sdk-version || true
+          command -v xcodegen && xcodegen --version || echo "xcodegen absent"

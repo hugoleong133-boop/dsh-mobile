@@ -339,7 +339,8 @@ function sendStatic(req, res, entry) {
   res.writeHead(200, {
     'content-type': entry.type,
     'content-length': body.byteLength,
-    'cache-control': 'public, max-age=300',
+    // 调试期间不要缓存：改了 css/js 要能立刻在手机上看到效果
+    'cache-control': 'no-cache, no-store, must-revalidate',
   });
   res.end(req.method === 'HEAD' ? undefined : body);
 }

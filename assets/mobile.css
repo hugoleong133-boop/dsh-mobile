@@ -1,7 +1,10 @@
 /*
  * dsh-mobile 注入样式。
- * 只做三件事：安全区、输入框缩放、滚动与点击手感。
- * 不动 DSH 自己的布局变量——它的 sidebar 在 <1024px 已经自动收成 rail。
+ * 只补浏览器环境缺的：安全区、输入框缩放、滚动与点击手感。
+ * 不动 DSH 自己的布局变量——它的 sidebar 在 <1024px 已自动收成 rail。
+ *
+ * 关键点：安全区必须挂在 #root 上，不能挂 body。
+ * DSH 的布局是 #root 内的 grid，给 body 加 padding 会被内部 100% 容器吃掉高度。
  */
 
 :root {
@@ -22,7 +25,6 @@ select,
 /* 去掉长按弹菜单与点击高亮，更接近原生手感 */
 body {
   -webkit-tap-highlight-color: transparent;
-  -webkit-touch-callout: none;
   overscroll-behavior-y: none;
 }
 
@@ -37,19 +39,47 @@ pre {
   -webkit-overflow-scrolling: touch;
 }
 
-/* 独立窗口（主屏幕图标启动）时给安全区留白 */
-html[data-dshm-standalone] body {
+/*
+ * 独立窗口（主屏幕图标 或 App 内 WKWebView）才需要安全区：
+ * 这两种情况下页面铺满整屏，刘海和底部指示条会压住内容。
+ * 普通 Safari 标签页里 env() 本身是 0，加不加都一样。
+ */
+html[data-dshm-standalone] #root,
+html[data-dshm-webview] #root {
+  box-sizing: border-box;
+  height: 100dvh;
+  max-height: 100dvh;
   padding-top: var(--dshm-safe-top);
   padding-bottom: var(--dshm-safe-bottom);
   padding-left: var(--dshm-safe-left);
   padding-right: var(--dshm-safe-right);
-  min-height: 100dvh;
-  box-sizing: border-box;
+}
+
+/*
+ * 窄屏防溢出安全网。
+ * DSH 是桌面优先布局，个别面板（下拉、命令面板、右侧栏）带固定宽度，
+ * 在 393pt 上会横向顶出屏幕。这里只裁掉横向越界，纵向滚动照常。
+ */
+html[data-dshm-standalone],
+html[data-dshm-webview] {
+  overflow-x: hidden;
+}
+
+html[data-dshm-standalone] body,
+html[data-dshm-webview] body {
+  max-width: 100vw;
+  overflow-x: hidden;
+}
+
+html[data-dshm-standalone] #root,
+html[data-dshm-webview] #root {
+  overflow-x: hidden;
 }
 
 /* 键盘弹起时用 visualViewport 的高度，避免底部输入框被顶出屏幕 */
-html[data-dshm-keyboard] body {
+html[data-dshm-keyboard] #root {
   height: var(--dshm-viewport-height, 100dvh);
+  max-height: var(--dshm-viewport-height, 100dvh);
 }
 
 /* 窄屏下把过大的标题回收一点，长会话更好扫 */

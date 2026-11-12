@@ -1,17 +1,22 @@
 /*
  * dsh-mobile 注入脚本。
  * 不 hook DSH 的 store，不拦截 fetch——只补浏览器环境缺的那几块：
- *   1. 标记独立窗口，让 CSS 挂安全区
+ *   1. 标记"独立窗口"，让 CSS 挂安全区（Safari 主屏幕 与 App 内 WKWebView 都要判）
  *   2. visualViewport 高度同步，键盘弹起时输入框不被遮
  *   3. 从后台恢复时触发一次 DSH 自己的重连（它监听 online 事件）
- *   4. 长按不再选中断行以外的文本以外的东西
  */
 (() => {
   const root = document.documentElement;
 
+  // Safari「添加到主屏幕」时 navigator.standalone === true；
+  // App 里的 WKWebView 里它是 undefined，只能靠 window.webkit 区分——
+  // 之前漏了这条判断，导致 App 内安全区 CSS 一直不生效。
+  const inWebView = !!(window.webkit && window.webkit.messageHandlers);
   const standalone = window.navigator.standalone === true
     || (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches);
-  if (standalone) root.dataset.dshmStandalone = '1';
+
+  if (inWebView) root.dataset.dshmWebview = '1';
+  if (standalone || inWebView) root.dataset.dshmStandalone = '1';
 
   const vv = window.visualViewport;
   if (vv) {

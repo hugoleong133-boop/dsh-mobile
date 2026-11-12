@@ -1,12 +1,23 @@
-# 运行时产物
+# 运行时产物（含设备密钥，绝不入库）
 state.json
 dsh-mobile.pid
 dsh-mobile.log
 dsh-mobile.err.log
+boot.log
 start.out
 start.err
 pair-url.txt
 pairing-qr.png
+tunnel-url.txt
+
+# 隧道工具与日志（cloudflared.exe 有 50 MB，自己下）
+tools/cloudflared.exe
+tools/ngrok.exe
+tools/ngrok.zip
+cloudflared.log
+cloudflared.out.log
+ngrok.log
+ngrok.out.log
 
 # iOS 构建
 ios/build/
@@ -20,9 +31,6 @@ ios/Payload/
 # 通用
 __pycache__/
 *.pyc
+*.log
 .DS_Store
 Thumbs.db
-probe.json
-job.log
-*.log
-

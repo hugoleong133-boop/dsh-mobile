@@ -169,19 +169,93 @@ node tests\health.mjs --url http://192.168.1.10:8765 --pin <PIN>
 
 ---
 
-## 6. 不在同一个 Wi-Fi 时
+## 6. 跨网络：在家操作公司电脑
 
-代理监听 `0.0.0.0`，所以任何能把流量送进来的隧道都能用：
+**不需要同一个 WiFi。** 代理监听 `0.0.0.0`，缺的从来不是「同一局域网」，而是一条能把流量送到公司电脑的路径。而且方向很关键：公司防火墙拦的是**入站**，所有可行方案都是**出站**连接。
+
+### 6.1 先判断公司给的是哪种「静态 IP」
+
+这两种意思完全相反，别混：
+
+| 说法 | 实际含义 | 对跨网络有用吗 |
+|---|---|---|
+| 公司给电脑固定 **192.168.x.x** | 静态**内网** IP，DHCP 保留地址 | ❌ 公网不可路由，端口映射也救不了 |
+| 公司有固定**公网** IP（专线） | IP 在路由器 WAN 口或本机网卡 | ✅ 才有可能被外面直接连 |
+
+跑一次就知道：
 
 ```powershell
-# Tailscale：手机装 Tailscale，用 tailnet 里的地址
-.\start.ps1 -PublicUrl "https://你的机器.tailnet-name.ts.net" -Background
-
-# Cloudflare Tunnel
-cloudflared tunnel --url http://127.0.0.1:8765
+.\probe-network.ps1          # 人话版
+.\probe-network.ps1 -Json    # 机器可读
 ```
 
-`-PublicUrl` 只影响打印的二维码内容，代理行为不变。
+它输出本机所有 IPv4（区分 private / public / CGNAT）、出口公网 IP 与归属、443 与 DNS 出站是否通，然后给判定：`public-direct` / `nat` / `cgnat`。
+
+### 6.2 三条路线
+
+| 路线 | 需要什么 | 公司 IT 要不要配合 | 域名稳定性 |
+|---|---|---|---|
+| **tailscale** | 两边装客户端、登同一账号 | 不要（纯出站） | 固定（MagicDNS 名不变） |
+| **cloudflared** | 单个 exe，免安装、免管理员 | 不要（纯出站 443） | quick tunnel 每次重启换域名 |
+| **ssh -R** | 家里有公网 IP / IPv6 / 常开 NAS | 不要 | 固定（你自己的域名/IP） |
+| 端口映射 | 路由器归你管 + 真·公网 IP | **要** | 固定，但把服务裸露在公网 |
+
+一条命令起步：
+
+```powershell
+# 自动挑一个已装的工具（tailscale → cloudflared → ngrok）
+.\tunnel.ps1 -Mode auto
+
+# 什么都没装、又不方便安装：拉单文件，纯用户态运行
+.\tunnel.ps1 -Mode cloudflare -Download
+
+# 家里有公网 IP / IPv6：公司主动连回家
+.\tunnel.ps1 -Mode ssh -SshTarget me@home.example.com
+
+# 人在家里打不开时，先看是哪一头挂了
+.\tunnel.ps1 -Mode status
+```
+
+### 6.3 这条链路我实测过
+
+在真实公网隧道上跑完整流程（cloudflared quick tunnel，本机 → Cloudflare → 回来）：
+
+```
+1) 未配对访问公网地址     200，返回配对页
+2) 公网 + PIN 换 cookie   303 + Set-Cookie: dshm=…; HttpOnly; SameSite=Lax
+3) 带 cookie 取 index     200 42203 bytes
+   viewport-fit=cover: True   apple-mobile-web-app-capable: True
+   /__m/mobile.css: True      __DSH_BOOT__: True
+4) WebSocket              101 upgrade（over public https）+ 服务端 ping 帧
+5) /__m/status            ok=true, upstream 127.0.0.1:53212
+```
+
+第 4 条是关键：**进度同步走的就是这条 WebSocket**，公网 101 打通，说明「家里看电脑上的实时进度」成立。测完立刻杀了隧道（Cloudflare 侧回 502，源站已消失）。
+
+### 6.4 公司电脑没人值守时要处理的三件事
+
+```powershell
+# 1) 登录自启（当前用户，不需要管理员）；会把 DSH 一起拉起来
+.\install-task.ps1
+.\install-task.ps1 -Status
+.\install-task.ps1 -Remove
+
+# 2) 别让它睡眠，否则隧道和代理一起断
+powercfg /change standby-timeout-ac 0
+powercfg /change hibernate-timeout-ac 0
+
+# 3) DSH 重启会换端口（实测 55514 → 53212），代理现在自动跟随
+```
+
+第 3 条以前是硬伤：笔记本/公司电脑上 DSH 一更新，代理就连着旧端口，人在家里只能干看着。现在 `server.mjs` 用 `tasklist` + `netstat` 找到 `DeepSeek Harness.exe` 真正监听的端口，启动时探一次，请求失败（`ECONNREFUSED`）时再探一次并重放 GET/HEAD。POST 不重放——它可能有副作用，让 DSH 自己的 RPC 重试逻辑处理。
+
+自检：`curl http://127.0.0.1:8765/__m/status`，看 `upstream.port` 与 `upstream.dshListening` 是否一致。
+
+### 6.5 安全边界（跨网络后才真正要紧）
+
+- 代理握着的是 **DSH owner Peer**，权限等于本机全量（含 `pwsh` 的 danger-full-access）。一条公网 URL + 6 位 PIN，等于把工作站挂在互联网上。
+- 所以：**优先 tailscale / ssh**，它们不对公网开放端口；用 cloudflared 时务必开着就开、用完就关，别让它常驻。
+- 隧道域名变了就要重新配对（`dshm` cookie 是 host-only）。`/__m/status` 特意做成免认证，只吐端口和进程数，不含 PIN、cookie、密钥。
 
 ---
 
@@ -202,11 +276,14 @@ cloudflared tunnel --url http://127.0.0.1:8765
 
 | 文件 | 作用 |
 |---|---|
-| `server.mjs` | 代理本体：PIN 门禁、cookie 铸造、Host/Origin 重写、HTML 注入、WebSocket 透传 |
+| `server.mjs` | 代理本体：PIN 门禁、cookie 铸造、Host/Origin 重写、HTML 注入、WebSocket 透传、上游端口自动跟随 |
 | `assets/mobile.css` `assets/mobile.js` | 注入到 DSH 页面的安全区/键盘/双击缩放修正 |
 | `assets/icon-*.png` | 主屏幕图标 |
 | `start.ps1` `stop.ps1` | 起停，自动探测 DSH 端口、局域网 IP、生成 PIN 与二维码 |
 | `firewall.ps1` | 放行入站端口（需管理员） |
+| `probe-network.ps1` | 判定公网直连 / NAT / CGNAT，给出该走哪条隧道 |
+| `tunnel.ps1` | 跨网络通道：tailscale / cloudflared / ngrok / ssh -R，附 `-Mode status` 排障 |
+| `boot.ps1` `install-task.ps1` | 无人值守：先拉起 DSH，再起代理；注册成登录自启任务 |
 | `sign-windows.ps1` | 把未签名 IPA 用 zsign 重签 |
 | `ios/` | SwiftUI + WKWebView 壳工程（XcodeGen 描述） |
 | `.github/workflows/build-ipa.yml` | macOS runner 编译并产出未签名 IPA |

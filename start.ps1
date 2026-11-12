@@ -98,6 +98,9 @@ $upstream = Resolve-UpstreamPort
 $lanIp = Resolve-LanIp
 $stateFile = Join-Path $here 'state.json'
 
+# 传 0 表示让 server.mjs 自己跟随 DSH 的端口变化（DSH 重启后端口会变）
+$upstreamArg = if ($UpstreamPort -gt 0) { $UpstreamPort } else { 0 }
+
 if (-not (Test-Path (Join-Path $dshHome '.credentials.yaml'))) {
   throw "缺少 $dshHome\.credentials.yaml —— 先启动一次 DeepSeek Harness 生成 browser-session 密钥。"
 }
@@ -115,7 +118,7 @@ if (-not $effectivePin) {
 $nodeArgs = @(
   (Join-Path $here 'server.mjs'),
   '--port', $Port,
-  '--upstream-port', $upstream,
+  '--upstream-port', $upstreamArg,
   '--state', $stateFile,
   '--pin', $effectivePin
 )
@@ -130,7 +133,7 @@ if ($busy) {
 
 Write-Host ''
 Write-Host "  node      $node" -ForegroundColor DarkGray
-Write-Host "  上游      http://127.0.0.1:$upstream" -ForegroundColor DarkGray
+Write-Host "  上游      http://127.0.0.1:$upstream （自动跟随端口变化）" -ForegroundColor DarkGray
 Write-Host "  局域网    $lanIp" -ForegroundColor DarkGray
 Write-Host ''
 

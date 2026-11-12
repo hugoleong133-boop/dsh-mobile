@@ -19,6 +19,7 @@
 
 import http from 'node:http';
 import https from 'node:https';
+import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { readFileSync, existsSync, writeFileSync, mkdirSync } from 'node:fs';
@@ -79,8 +80,112 @@ function parseArgs(argv) {
 }
 
 const ARGS = parseArgs(process.argv.slice(2));
-const UP_AUTHORITY = `${ARGS.upstreamHost}:${ARGS.upstreamPort}`;
-const UP_ORIGIN = `http://${UP_AUTHORITY}`;
+
+/**
+ * 上游端口是活的：DSH 重启/升级后会换端口（本机实测 55514 → 53212）。
+ * 0 表示交给自动发现；发现失败就退回最后一次已知端口。
+ */
+const UP = {
+  host: ARGS.upstreamHost,
+  port: ARGS.upstreamPort > 0 ? ARGS.upstreamPort : 0,
+  lastGood: ARGS.upstreamPort > 0 ? ARGS.upstreamPort : 0,
+  lastProbe: 0,
+  lastProbeResult: 0,
+};
+
+const autoUpstream = ARGS.upstreamPort <= 0;
+
+function upAuthority() {
+  return `${UP.host}:${UP.port}`;
+}
+
+function upOrigin() {
+  return `http://${upAuthority()}`;
+}
+
+// ---------------------------------------------------------------- upstream discovery
+
+const DSH_PROCESS = 'DeepSeek Harness.exe';
+const PROBE_COOLDOWN_MS = 3000;
+const PROBE_MAX_AGE_MS = 30000;
+
+/** 正在跑的 DSH 进程 PID 列表。tasklist 是 Windows 自带，不需要管理员。 */
+function dshPids() {
+  try {
+    const out = execFileSync(
+      'tasklist',
+      ['/FI', `IMAGENAME eq ${DSH_PROCESS}`, '/FO', 'CSV', '/NH'],
+      { encoding: 'utf8', windowsHide: true, timeout: 8000 },
+    );
+    const pids = [];
+    for (const line of out.split(/\r?\n/)) {
+      const m = /^"([^"]+)","(\d+)"/.exec(line.trim());
+      if (m && m[1].toLowerCase() === DSH_PROCESS.toLowerCase()) pids.push(Number(m[2]));
+    }
+    return pids;
+  } catch {
+    return [];
+  }
+}
+
+/** 这些 PID 正在 LISTEN 的回环端口。 */
+function listenerPorts(pids) {
+  try {
+    const out = execFileSync('netstat', ['-ano', '-p', 'TCP'], { encoding: 'utf8', windowsHide: true, timeout: 8000 });
+    const ports = [];
+    for (const line of out.split(/\r?\n/)) {
+      const cols = line.trim().split(/\s+/);
+      if (cols.length < 5 || cols[0] !== 'TCP') continue;
+      if (cols[3] !== 'LISTENING') continue;
+      if (!pids.includes(Number(cols[4]))) continue;
+      const port = Number(cols[1].slice(cols[1].lastIndexOf(':') + 1));
+      if (port > 0) ports.push(port);
+    }
+    return ports.sort((a, b) => a - b);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * 重新发现上游端口。带冷却，避免每个失败请求都 fork 两个进程。
+ * 优先沿用上次成功的端口，这样多窗口并存时不会来回跳。
+ * @returns 找到的端口，0 表示没找到
+ */
+function discoverUpstream(force = false) {
+  const now = Date.now();
+  if (!force && now - UP.lastProbe < PROBE_COOLDOWN_MS) return UP.lastProbeResult;
+  UP.lastProbe = now;
+
+  const pids = dshPids();
+  if (pids.length === 0) {
+    UP.lastProbeResult = 0;
+    return 0;
+  }
+  const ports = listenerPorts(pids);
+  if (ports.length === 0) {
+    UP.lastProbeResult = 0;
+    return 0;
+  }
+  const chosen = ports.includes(UP.lastGood) ? UP.lastGood : ports[0];
+  UP.lastProbeResult = chosen;
+  if (chosen !== UP.port) {
+    const from = UP.port || '自动';
+    UP.port = chosen;
+    UP.lastGood = chosen;
+    console.log(`[upstream] ${from} -> ${chosen}（DSH 换了监听端口）`);
+  }
+  return chosen;
+}
+
+if (autoUpstream) {
+  const found = discoverUpstream(true);
+  if (found === 0) {
+    console.error('[upstream] 现在没发现监听的 DeepSeek Harness；代理继续跑，收到请求时会再探。');
+  }
+}
+
+
 
 // ---------------------------------------------------------------- DSH cookie
 
@@ -127,16 +232,25 @@ function cookieNameFor(authority) {
   return 'dsh-auth-' + b64u(createHash('sha256').update(authority).digest());
 }
 
-function mintDshCookie(secret, days) {
+function mintDshCookie(secret, days, authority) {
   const now = Date.now();
-  const payload = { version: 1, authority: UP_AUTHORITY, issuedAt: now, expiresAt: now + days * 86400_000 };
+  const payload = { version: 1, authority, issuedAt: now, expiresAt: now + days * 86400_000 };
   const body = b64u(Buffer.from(JSON.stringify(payload), 'utf8'));
   const sig = b64u(createHmac('sha256', secret).update(body).digest());
-  return `${cookieNameFor(UP_AUTHORITY)}=v1.${body}.${sig}`;
+  return `${cookieNameFor(authority)}=v1.${body}.${sig}`;
 }
 
 const SECRET = readBrowserSecret(ARGS.credentials);
-const DSH_COOKIE = mintDshCookie(SECRET, ARGS.cookieDays);
+
+// cookie 绑 authority（= host:port），上游换端口就得重铸，按端口缓存
+let cookieCache = { port: 0, value: '' };
+
+function dshCookie() {
+  if (cookieCache.port !== UP.port) {
+    cookieCache = { port: UP.port, value: mintDshCookie(SECRET, ARGS.cookieDays, upAuthority()) };
+  }
+  return cookieCache.value;
+}
 
 // ---------------------------------------------------------------- local state
 
@@ -297,10 +411,10 @@ function proxyHeaders(req) {
   for (const [k, v] of Object.entries(req.headers)) {
     if (v !== undefined) headers[k] = v;
   }
-  headers.host = UP_AUTHORITY;
-  if (headers.origin) headers.origin = UP_ORIGIN;
-  if (headers.referer) headers.referer = String(headers.referer).replace(/^https?:\/\/[^/]+/i, UP_ORIGIN);
-  headers.cookie = DSH_COOKIE;
+  headers.host = upAuthority();
+  if (headers.origin) headers.origin = upOrigin();
+  if (headers.referer) headers.referer = String(headers.referer).replace(/^https?:\/\/[^/]+/i, upOrigin());
+  headers.cookie = dshCookie();
   headers['accept-encoding'] = 'identity';
   headers['x-forwarded-for'] = clientIp(req);
   headers['x-forwarded-host'] = req.headers.host || '';
@@ -312,10 +426,21 @@ function wantsHtml(req) {
   return req.method === 'GET' || req.method === 'HEAD';
 }
 
-function handleProxy(req, res) {
+function handleProxy(req, res, attempt = 1) {
+  const bodyless = req.method === 'GET' || req.method === 'HEAD';
+  const canRetry = attempt === 1 && bodyless && autoUpstream;
+
+  if (UP.port === 0) {
+    if (discoverUpstream(true) === 0) {
+      res.writeHead(503, { 'content-type': 'text/plain; charset=utf-8' });
+      res.end('dsh-mobile: 没有发现正在监听的 DeepSeek Harness，先在这台电脑上打开 DSH。\n');
+      return;
+    }
+  }
+
   const options = {
-    host: ARGS.upstreamHost,
-    port: ARGS.upstreamPort,
+    host: UP.host,
+    port: UP.port,
     method: req.method,
     path: req.url,
     headers: proxyHeaders(req),
@@ -356,11 +481,23 @@ function handleProxy(req, res) {
       res.destroy();
       return;
     }
+
+    // DSH 重启换了端口时，老端口是 ECONNREFUSED。GET/HEAD 无副作用，重探一次再打。
+    if (canRetry && (err.code === 'ECONNREFUSED' || err.code === 'EHOSTUNREACH' || err.code === 'ECONNRESET')) {
+      const before = UP.port;
+      const found = discoverUpstream(true);
+      if (found > 0 && found !== before) {
+        handleProxy(req, res, attempt + 1);
+        return;
+      }
+    }
+
     res.writeHead(502, { 'content-type': 'text/plain; charset=utf-8' });
-    res.end(`dsh-mobile: upstream ${UP_AUTHORITY} failed — ${err.message}\n`);
+    res.end(`dsh-mobile: upstream ${upAuthority()} failed — ${err.message}\n`);
   });
 
-  req.pipe(upstream);
+  if (bodyless) upstream.end();
+  else req.pipe(upstream);
 }
 
 // ---------------------------------------------------------------- HTTP entry
@@ -378,6 +515,28 @@ function handle(req, res) {
   const staticEntry = STATIC.get(pathname);
   if (staticEntry) {
     sendStatic(req, res, staticEntry);
+    return;
+  }
+
+  // 免认证的自检端点：人在外网时用来判断到底是代理挂了还是 DSH 挂了。
+  // 只暴露端口与进程计数，不含 PIN、不含 cookie、不含密钥。
+  if (pathname === '/__m/status') {
+    const pids = dshPids();
+    const ports = listenerPorts(pids);
+    const payload = {
+      ok: ports.length > 0 && ports.includes(UP.port),
+      proxy: { port: ARGS.port, listen: ARGS.listen, tls: Boolean(ARGS.tlsCert) },
+      upstream: {
+        authority: upAuthority(),
+        port: UP.port,
+        auto: autoUpstream,
+        dshProcesses: pids.length,
+        dshListening: ports,
+      },
+      uptimeSeconds: Math.round(process.uptime()),
+    };
+    res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+    res.end(JSON.stringify(payload, null, 2));
     return;
   }
 
@@ -458,7 +617,7 @@ function handleUpgrade(req, clientSocket, head) {
 
   const upstream = http.request({
     host: ARGS.upstreamHost,
-    port: ARGS.upstreamPort,
+    port: UP.port,
     method: req.method,
     path: req.url,
     headers: proxyHeaders(req),
@@ -516,7 +675,7 @@ function banner(protocol) {
   lines.push(`  本机            ${protocol}://127.0.0.1:${ARGS.port}/?k=${STATE.pin}`);
   lines.push('  ' + '─'.repeat(58));
   lines.push(`  PIN             ${STATE.pin}`);
-  lines.push(`  上游            ${UP_AUTHORITY}`);
+  lines.push(`  上游            ${upAuthority()}`);
   lines.push(`  状态文件        ${ARGS.stateFile}`);
   lines.push('');
   lines.push('  iPhone：Safari 打开上面任一手机地址 → 分享 → 添加到主屏幕');

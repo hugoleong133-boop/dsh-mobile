@@ -314,9 +314,70 @@ function isAuthed(req) {
   return value !== undefined && safeEqual(value, GATE_VALUE);
 }
 
+/**
+ * 客户端 IP。经 nginx 反代时 socket 是 127.0.0.1，
+ * 必须看 X-Forwarded-For 的第一个地址，否则限速会把所有人当成同一个 IP。
+ * 只有本机反代才会设置这个头，外部直连伪造不了（代理只信任来自回环的转发）。
+ */
 function clientIp(req) {
-  return (req.socket.remoteAddress || '').replace(/^::ffff:/, '');
+  const remote = (req.socket.remoteAddress || '').replace(/^::ffff:/, '');
+  const forwarded = req.headers['x-forwarded-for'];
+  if (forwarded && (remote === '127.0.0.1' || remote === '::1')) {
+    const first = String(forwarded).split(',')[0].trim().replace(/^::ffff:/, '');
+    if (first) return first;
+  }
+  return remote;
 }
+
+// ---------------------------------------------------------------- PIN 限速
+
+/**
+ * 6 位 PIN 只有一百万种可能，没有限速就是可爆破的。
+ * 暴露到公网后这一层必须有：单 IP 一分钟 5 次，连错 5 次锁 15 分钟。
+ */
+const PIN_WINDOW_MS = 60_000;
+const PIN_MAX_ATTEMPTS = 5;
+const PIN_LOCK_MS = 15 * 60_000;
+const pinAttempts = new Map();
+
+function pinGuard(ip) {
+  const now = Date.now();
+  let rec = pinAttempts.get(ip);
+  if (rec === undefined) {
+    rec = { count: 0, windowStart: now, lockedUntil: 0 };
+    pinAttempts.set(ip, rec);
+  }
+  if (rec.lockedUntil > now) {
+    return { allowed: false, retryAfter: Math.ceil((rec.lockedUntil - now) / 1000) };
+  }
+  if (now - rec.windowStart > PIN_WINDOW_MS) {
+    rec.count = 0;
+    rec.windowStart = now;
+  }
+  return { allowed: rec.count < PIN_MAX_ATTEMPTS, retryAfter: rec.lockedUntil > now ? 1 : 0 };
+}
+
+function pinFailure(ip) {
+  const rec = pinAttempts.get(ip);
+  if (rec === undefined) return;
+  rec.count += 1;
+  if (rec.count >= PIN_MAX_ATTEMPTS) {
+    rec.lockedUntil = Date.now() + PIN_LOCK_MS;
+    console.log(`[pin] ${ip} 连续失败 ${rec.count} 次，锁定 15 分钟`);
+  }
+}
+
+function pinSuccess(ip) {
+  pinAttempts.delete(ip);
+}
+
+// 定期清理过期记录，避免长期运行内存增长
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, rec] of pinAttempts) {
+    if (rec.lockedUntil < now && now - rec.windowStart > PIN_WINDOW_MS * 5) pinAttempts.delete(ip);
+  }
+}, 60_000).unref();
 
 // ---------------------------------------------------------------- static assets
 
@@ -348,7 +409,11 @@ function sendStatic(req, res, entry) {
 // ---------------------------------------------------------------- pairing page
 
 function pairingPage(reason, target) {
-  const reasonText = reason === 'bad-pin' ? 'PIN 不对，重新输入。' : '这台设备还没配对上。';
+  const reasonText = reason === 'bad-pin'
+    ? 'PIN 不对，重新输入。'
+    : reason === 'locked'
+      ? '尝试次数过多，请 15 分钟后再试。'
+      : '这台设备还没配对上。';
   const action = target && target !== '/' ? `?next=${encodeURIComponent(target)}` : '';
   return `<!doctype html>
 <html lang="zh-CN"><head>
@@ -385,7 +450,7 @@ code{background:#26262b;padding:1px 6px;border-radius:5px;font-size:12px}
     <input name="pin" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="one-time-code" autofocus placeholder="------">
     <button type="submit">连接</button>
   </form>
-  <div class="err">${reason === 'bad-pin' ? 'PIN 校验失败' : ''}</div>
+  <div class="err">${reason === 'bad-pin' ? 'PIN 校验失败' : reason === 'locked' ? '已锁定' : ''}</div>
   <div class="hint">配对成功后：Safari 分享按钮 → 「添加到主屏幕」，
   之后从主屏幕图标进入就是全屏 App，和电脑上看到的是同一个会话。</div>
 </div></body></html>`;
@@ -594,15 +659,30 @@ function handle(req, res) {
     const chunks = [];
     req.on('data', (c) => chunks.push(c));
     req.on('end', () => {
+      const ip = clientIp(req);
+      const guard = pinGuard(ip);
+      if (!guard.allowed) {
+        res.writeHead(429, {
+          'content-type': 'text/html; charset=utf-8',
+          'cache-control': 'no-store',
+          'retry-after': String(Math.max(1, guard.retryAfter)),
+        });
+        res.end(pairingPage('locked', '/'));
+        return;
+      }
+
       const body = new URLSearchParams(Buffer.concat(chunks).toString('utf8'));
       const pin = String(body.get('pin') || '').trim();
       const next = String(body.get('next') || url.searchParams.get('next') || '/');
       const dest = next.startsWith('/') && !next.startsWith('//') ? next : '/';
       if (!safeEqual(pin, STATE.pin)) {
+        pinFailure(ip);
+        console.log(`[pin] ${ip} 失败`);
         res.writeHead(401, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
         res.end(pairingPage('bad-pin', dest));
         return;
       }
+      pinSuccess(ip);
       const attrs = [
         `${GATE_NAME}=${GATE_VALUE}`,
         `Max-Age=${String(180 * 86400)}`,
@@ -611,7 +691,7 @@ function handle(req, res) {
         'SameSite=Lax',
       ];
       if (ARGS.tlsCert) attrs.push('Secure');
-      console.log(`[pair] ${clientIp(req)} -> ${dest}`);
+      console.log(`[pair] ${ip} -> ${dest}`);
       res.writeHead(303, { 'set-cookie': attrs.join('; '), location: dest });
       res.end();
     });
@@ -620,14 +700,29 @@ function handle(req, res) {
 
   // 允许直接用 ?k=<pin> 配对（二维码/手输链接）
   const queryPin = url.searchParams.get('k');
-  if (queryPin !== null && safeEqual(queryPin, STATE.pin)) {
-    const attrs = [`${GATE_NAME}=${GATE_VALUE}`, `Max-Age=${String(180 * 86400)}`, 'Path=/', 'HttpOnly', 'SameSite=Lax'];
-    if (ARGS.tlsCert) attrs.push('Secure');
-    url.searchParams.delete('k');
-    const dest = url.pathname + (url.searchParams.toString() ? `?${url.searchParams.toString()}` : '');
-    res.writeHead(303, { 'set-cookie': attrs.join('; '), location: dest });
-    res.end();
-    return;
+  if (queryPin !== null) {
+    const ip = clientIp(req);
+    const guard = pinGuard(ip);
+    if (!guard.allowed) {
+      res.writeHead(429, {
+        'content-type': 'text/html; charset=utf-8',
+        'cache-control': 'no-store',
+        'retry-after': String(Math.max(1, guard.retryAfter)),
+      });
+      res.end(pairingPage('locked', '/'));
+      return;
+    }
+    if (safeEqual(queryPin, STATE.pin)) {
+      pinSuccess(ip);
+      const attrs = [`${GATE_NAME}=${GATE_VALUE}`, `Max-Age=${String(180 * 86400)}`, 'Path=/', 'HttpOnly', 'SameSite=Lax'];
+      if (ARGS.tlsCert) attrs.push('Secure');
+      url.searchParams.delete('k');
+      const dest = url.pathname + (url.searchParams.toString() ? `?${url.searchParams.toString()}` : '');
+      res.writeHead(303, { 'set-cookie': attrs.join('; '), location: dest });
+      res.end();
+      return;
+    }
+    pinFailure(ip);
   }
 
   if (!isAuthed(req)) {

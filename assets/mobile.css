@@ -94,21 +94,23 @@ html[data-dshm-keyboard] #root {
 }
 
 /*
- * 输入区尾部工具条（_trailing_）在 430pt 下实测宽 456px、flex-shrink:0，
- * 直接顶出屏幕右缘。让它可收缩并自己横向滚动，按钮不会被压扁，也不会再溢出。
- * 用 class 名片段而不是完整 hash：CSS Modules 的 hash 每次构建都会变。
+ * 输入区工具条在竖屏放不下。
+ * 注意类名形态：插件注入的元素是 `GRgSLq_trailing`（hash 在前、结尾无下划线），
+ * 所以必须用 [class*='_trailing']，写成 '_trailing_' 是匹配不到的。
+ *
+ * 之前用过 overflow-x:auto，结果只是把按钮藏进滚动区，用户照样看不见。
+ * 这里改成换行：宁可多占一行，也要全部显示出来。
  */
 @media (max-width: 560px) {
-  [class*='_trailing_'] {
-    flex-shrink: 1 !important;
-    min-width: 0 !important;
+  [class*='_trailing'] {
+    flex-wrap: wrap !important;
+    justify-content: flex-end;
+    row-gap: 6px;
+    min-width: 0;
     max-width: 100%;
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
-    scrollbar-width: none;
   }
 
-  [class*='_trailing_']::-webkit-scrollbar {
-    display: none;
+  [class*='_trailing'] > * {
+    flex-shrink: 0;
   }
 }

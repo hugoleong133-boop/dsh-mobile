@@ -145,8 +145,53 @@
     };
   };
 
-  /** 量一下安全区实际值：App 里 env() 应该有非零值，Safari 标签页里是 0。 */
-  const probeSafeArea = () => {
+  /**
+   * 专门量输入区那条工具条，不管它有没有溢出都回报。
+   * 插件按钮是运行时注入的（回退/清洗面板/Hook 拦截/数据库/…），
+   * 主 CSS 里查不到，只能这样拿真实结构与宽度。
+   */
+  const probeComposer = () => {
+    const bar = document.querySelector('[class*="_trailing"]');
+    if (!bar) return { found: false };
+    const s = getComputedStyle(bar);
+    const r = bar.getBoundingClientRect();
+    const kids = Array.from(bar.children).slice(0, 14).map((c) => {
+      const cr = c.getBoundingClientRect();
+      const cs = getComputedStyle(c);
+      return {
+        el: describe(c),
+        w: Math.round(cr.width),
+        h: Math.round(cr.height),
+        label: (c.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 12),
+        display: cs.display,
+        flexShrink: cs.flexShrink,
+        marginLeft: cs.marginLeft,
+        marginRight: cs.marginRight,
+      };
+    });
+    const parent = bar.parentElement;
+    const ps = parent ? getComputedStyle(parent) : null;
+    return {
+      found: true,
+      el: describe(bar),
+      rectW: Math.round(r.width),
+      scrollW: bar.scrollWidth,
+      overflowX: s.overflowX,
+      flexWrap: s.flexWrap,
+      flexShrink: s.flexShrink,
+      gap: s.gap,
+      minWidth: s.minWidth,
+      parentEl: parent ? describe(parent) : null,
+      parentDisplay: ps ? ps.display : null,
+      parentFlexWrap: ps ? ps.flexWrap : null,
+      parentRectW: parent ? Math.round(parent.getBoundingClientRect().width) : null,
+      childCount: bar.children.length,
+      children: kids,
+      viewportW: window.innerWidth,
+    };
+  };
+
+  /** 量一下安全区实际值：App 里 env() 应该有非零值，Safari 标签页里是 0。 */  const probeSafeArea = () => {
     const d = document.createElement('div');
     d.style.cssText = 'position:fixed;top:0;left:0;width:0;height:0;visibility:hidden;'
       + 'padding-top:env(safe-area-inset-top);padding-bottom:env(safe-area-inset-bottom);'
@@ -173,6 +218,7 @@
     try {
       const data = scanOverflow();
       data.safeArea = probeSafeArea();
+      data.composer = probeComposer();
       console.log('[dshm] overflow report', data);
       fetch('/__m/diag', {
         method: 'POST',

@@ -145,9 +145,34 @@
     };
   };
 
+  /** 量一下安全区实际值：App 里 env() 应该有非零值，Safari 标签页里是 0。 */
+  const probeSafeArea = () => {
+    const d = document.createElement('div');
+    d.style.cssText = 'position:fixed;top:0;left:0;width:0;height:0;visibility:hidden;'
+      + 'padding-top:env(safe-area-inset-top);padding-bottom:env(safe-area-inset-bottom);'
+      + 'padding-left:env(safe-area-inset-left);padding-right:env(safe-area-inset-right);';
+    document.body.appendChild(d);
+    const s = getComputedStyle(d);
+    const env = {
+      top: s.paddingTop, bottom: s.paddingBottom, left: s.paddingLeft, right: s.paddingRight,
+    };
+    d.remove();
+    const rootEl = document.getElementById('root');
+    const rs = rootEl ? getComputedStyle(rootEl) : null;
+    return {
+      env,
+      rootHeight: rs ? rs.height : 'n/a',
+      rootPaddingBottom: rs ? rs.paddingBottom : 'n/a',
+      rootPaddingTop: rs ? rs.paddingTop : 'n/a',
+      standaloneFlag: root.dataset.dshmStandalone || 'none',
+      webviewFlag: root.dataset.dshmWebview || 'none',
+    };
+  };
+
   const report = () => {
     try {
       const data = scanOverflow();
+      data.safeArea = probeSafeArea();
       console.log('[dshm] overflow report', data);
       fetch('/__m/diag', {
         method: 'POST',

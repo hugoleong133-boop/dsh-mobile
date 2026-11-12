@@ -1,6 +1,7 @@
 import SwiftUI
 import UIKit
 import WebKit
+import UniformTypeIdentifiers
 
 struct RootView: View {
     @EnvironmentObject private var store: EndpointStore
@@ -105,7 +106,6 @@ struct SessionView: View {
                 reloadToken: reloadToken,
                 failure: $failure,
                 onFailure: {
-                    // 先清掉错误再试下一个；全部都失败才让面板出现
                     failure = nil
                     return store.advance()
                 },
@@ -161,14 +161,12 @@ struct SessionView: View {
     }
 
     private var addressSummary: String {
-        let list = store.endpoints.enumerated().map { index, item in
+        store.endpoints.enumerated().map { index, item in
             (index == store.activeIndex ? "▶ " : "   ") + item.absoluteString
-        }
-        return list.joined(separator: "\n")
+        }.joined(separator: "\n")
     }
 }
 
-/// 加载失败时顶替黑屏。原来没有失败回调，加载挂了就是一片黑，等于没有诊断信息。
 struct FailurePanel: View {
     let url: URL
     let message: String
@@ -192,14 +190,10 @@ struct FailurePanel: View {
                 .textSelection(.enabled)
 
             HStack(spacing: 10) {
-                Button("重试", action: onRetry)
-                    .buttonStyle(.borderedProminent)
-                Button("全部重试", action: onRestart)
-                    .buttonStyle(.bordered)
-                Button("在 Safari 打开") { UIApplication.shared.open(url) }
-                    .buttonStyle(.bordered)
-                Button("重新配对", action: onRepair)
-                    .buttonStyle(.bordered)
+                Button("重试", action: onRetry).buttonStyle(.borderedProminent)
+                Button("全部重试", action: onRestart).buttonStyle(.bordered)
+                Button("在 Safari 打开") { UIApplication.shared.open(url) }.buttonStyle(.bordered)
+                Button("重新配对", action: onRepair).buttonStyle(.bordered)
             }
             .font(.system(size: 14))
 
@@ -213,7 +207,14 @@ struct FailurePanel: View {
     }
 }
 
-/// WKWebView 壳。所有导航都留在 App 内；只有 scheme 不是 http(s) 时交给系统。
+// MARK: - WebView 壳
+
+/// WKWebView 默认不工作、但 DSH 前端实际用到的东西，这里逐个补上：
+///   1. `<input type="file">`        → runOpenPanelWith，否则点附件按钮毫无反应
+///   2. `alert/confirm/prompt`       → 插件删除会话靠 confirm 二次确认
+///   3. `navigator.clipboard`        → http 下不是安全上下文，注入 execCommand 兜底
+///   4. blob: + `<a download>`       → WKWebView 不会下载，桥接到系统分享面板
+///   5. `window.open` / target=_blank → 同窗口打开
 struct WebContainer: UIViewRepresentable {
     let url: URL
     let reloadToken: Int
@@ -221,12 +222,118 @@ struct WebContainer: UIViewRepresentable {
     let onFailure: () -> Bool
     let onSuccess: () -> Void
 
+    /// 注入到页面最前面的补丁脚本
+    static let bootstrapJS = #"""
+    (function () {
+      if (window.__dshmBridgeInstalled) return;
+      window.__dshmBridgeInstalled = true;
+
+      // ---- 剪贴板兜底：http 下 navigator.clipboard 不存在 ----
+      function fallbackWriteText(text) {
+        return new Promise(function (resolve, reject) {
+          try {
+            var ta = document.createElement('textarea');
+            ta.value = text;
+            ta.setAttribute('readonly', '');
+            ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0;';
+            document.body.appendChild(ta);
+            ta.select();
+            ta.setSelectionRange(0, ta.value.length);
+            var ok = document.execCommand('copy');
+            document.body.removeChild(ta);
+            ok ? resolve() : reject(new Error('execCommand copy failed'));
+          } catch (e) { reject(e); }
+        });
+      }
+
+      var needsPolyfill = !window.isSecureContext || !navigator.clipboard || !navigator.clipboard.writeText;
+      if (needsPolyfill) {
+        try {
+          Object.defineProperty(navigator, 'clipboard', {
+            configurable: true,
+            value: {
+              writeText: fallbackWriteText,
+              readText: function () { return Promise.reject(new Error('unsupported')); },
+              write: function (items) {
+                return Promise.all(items.map(function (item) {
+                  if (item.getType && item.types && item.types.indexOf('text/plain') >= 0) {
+                    return item.getType('text/plain').then(function (b) { return b.text(); }).then(fallbackWriteText);
+                  }
+                  return Promise.resolve();
+                }));
+              }
+            }
+          });
+        } catch (e) { /* 定义失败就保持原样 */ }
+      }
+
+      // ---- blob 下载桥接：把 url 存下来，点击 <a download> 时读出内容发给原生 ----
+      var objectUrls = {};
+      var nativeCreate = URL.createObjectURL.bind(URL);
+      URL.createObjectURL = function (obj) {
+        var u = nativeCreate(obj);
+        try { objectUrls[u] = obj; } catch (e) {}
+        return u;
+      };
+
+      function sendToNative(name, blob) {
+        if (!window.webkit || !window.webkit.messageHandlers || !window.webkit.messageHandlers.dshmSave) return false;
+        var reader = new FileReader();
+        reader.onloadend = function () {
+          var dataUrl = String(reader.result || '');
+          var comma = dataUrl.indexOf(',');
+          window.webkit.messageHandlers.dshmSave.postMessage({
+            name: name || ('dsh-' + Date.now()),
+            mime: (blob && blob.type) || '',
+            data: comma >= 0 ? dataUrl.slice(comma + 1) : ''
+          });
+        };
+        reader.readAsDataURL(blob);
+        return true;
+      }
+
+      document.addEventListener('click', function (event) {
+        var node = event.target;
+        while (node && node !== document && !(node.tagName === 'A' && node.hasAttribute && node.hasAttribute('download'))) {
+          node = node.parentElement;
+        }
+        if (!node || node === document || !node.hasAttribute('download')) return;
+        var href = node.getAttribute('href') || '';
+        var name = node.getAttribute('download') || 'download';
+        if (!href) return;
+
+        if (href.indexOf('blob:') === 0 || href.indexOf('data:') === 0) {
+          event.preventDefault();
+          event.stopPropagation();
+          if (href.indexOf('blob:') === 0 && objectUrls[href]) {
+            sendToNative(name, objectUrls[href]);
+          } else if (href.indexOf('data:') === 0) {
+            var comma = href.indexOf(',');
+            var meta = href.slice(5, comma);
+            window.webkit.messageHandlers.dshmSave.postMessage({
+              name: name, mime: meta.split(';')[0],
+              data: comma >= 0 ? href.slice(comma + 1) : ''
+            });
+          }
+        }
+      }, true);
+    })();
+    """#
+
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
     func makeUIView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
         config.allowsInlineMediaPlayback = true
         config.mediaTypesRequiringUserActionForPlayback = []
+
+        let controller = config.userContentController
+        controller.add(context.coordinator, name: "dshmSave")
+        controller.addUserScript(WKUserScript(
+            source: Self.bootstrapJS,
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: true
+        ))
 
         let view = WKWebView(frame: .zero, configuration: config)
         view.navigationDelegate = context.coordinator
@@ -244,15 +351,19 @@ struct WebContainer: UIViewRepresentable {
         context.coordinator.load(url, token: reloadToken, in: view)
     }
 
-    final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
+    static func dismantleUIView(_ view: WKWebView, coordinator: Coordinator) {
+        view.configuration.userContentController.removeScriptMessageHandler(forName: "dshmSave")
+    }
+
+    final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler, UIDocumentPickerDelegate {
         private let parent: WebContainer
         private var loadedKey = ""
+        private var openPanelCompletion: (([URL]?) -> Void)?
 
         init(_ parent: WebContainer) {
             self.parent = parent
         }
 
-        /// 地址或 reloadToken 任一变化才重新加载，避免 SwiftUI 每帧都刷新
         func load(_ url: URL, token: Int, in view: WKWebView) {
             let key = "\(url.absoluteString)#\(token)"
             guard key != loadedKey else { return }
@@ -278,10 +389,7 @@ struct WebContainer: UIViewRepresentable {
 
         private func report(_ error: Error) {
             let ns = error as NSError
-            // 用户自己取消/重定向打断的不算失败
             if ns.domain == NSURLErrorDomain && ns.code == NSURLErrorCancelled { return }
-
-            // 有下一个候选地址就直接切，别让用户看见错误
             if parent.onFailure() { return }
 
             var text = "\(ns.localizedDescription)（\(ns.domain) \(ns.code)）"
@@ -291,6 +399,8 @@ struct WebContainer: UIViewRepresentable {
             parent.failure = text
         }
 
+        // MARK: 导航策略
+
         func webView(_ webView: WKWebView,
                      decidePolicyFor navigationAction: WKNavigationAction,
                      decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
@@ -298,8 +408,8 @@ struct WebContainer: UIViewRepresentable {
                 decisionHandler(.allow)
                 return
             }
-            if target.scheme == "http" || target.scheme == "https" || target.scheme == "about" {
-                // target=_blank 不实现 createWebView 的话点了没反应，这里改成同窗口打开
+            if target.scheme == "http" || target.scheme == "https" || target.scheme == "about"
+                || target.scheme == "blob" || target.scheme == "data" {
                 if navigationAction.targetFrame == nil {
                     webView.load(navigationAction.request)
                     decisionHandler(.cancel)
@@ -312,12 +422,72 @@ struct WebContainer: UIViewRepresentable {
             decisionHandler(.cancel)
         }
 
-        // MARK: - 原生对话框
+        /// window.open / target=_blank：没有这个回调时点了什么都不发生
+        func webView(_ webView: WKWebView,
+                     createWebViewWith configuration: WKWebViewConfiguration,
+                     for navigationAction: WKNavigationAction,
+                     windowFeatures: WKWindowFeatures) -> WKWebView? {
+            if navigationAction.request.url != nil {
+                webView.load(navigationAction.request)
+            }
+            return nil
+        }
+
+        // MARK: 文件选择器
         //
-        // WKWebView 不会自动处理 alert / confirm / prompt：
-        // 不实现这些回调时，confirm() 直接返回 false、alert() 被静默丢弃。
-        // 插件里「删除会话（含子会话）」就是靠 confirm 二次确认的，
-        // 少了这一层，点了等于立刻取消 —— 表现就是「按钮没反应」。
+        // `<input type="file">` 在 WKWebView 里不会自己弹面板，必须实现这个回调。
+        // DSH 的附件上传就是靠它，缺了这一层，点附件按钮毫无反应。
+
+        func webView(_ webView: WKWebView,
+                     runOpenPanelWith parameters: WKOpenPanelParameters,
+                     initiatedByFrame frame: WKFrameInfo,
+                     completionHandler: @escaping ([URL]?) -> Void) {
+            openPanelCompletion = completionHandler
+
+            // WKOpenPanelParameters 只有 allowsMultipleSelection / allowsDirectories，
+            // 拿不到 accept 列表，所以给一组通用类型，用户也能选"所有文件"。
+            let picker = UIDocumentPickerViewController(
+                forOpeningContentTypes: [.item, .image, .movie, .audio, .text, .pdf, .data],
+                asCopy: true
+            )
+            picker.allowsMultipleSelection = parameters.allowsMultipleSelection
+            picker.delegate = self
+            topViewController()?.present(picker, animated: true)
+        }
+
+        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+            openPanelCompletion?(urls)
+            openPanelCompletion = nil
+        }
+
+        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+            openPanelCompletion?(nil)
+            openPanelCompletion = nil
+        }
+
+        // MARK: blob 下载 → 系统分享
+
+        func userContentController(_ userContentController: WKUserContentController,
+                                   didReceive message: WKScriptMessage) {
+            guard message.name == "dshmSave",
+                  let body = message.body as? [String: Any],
+                  let data = body["data"] as? String else { return }
+
+            let rawName = (body["name"] as? String) ?? "download"
+            let name = rawName.contains(".") ? rawName : rawName + ".bin"
+            let temp = FileManager.default.temporaryDirectory.appendingPathComponent(name)
+
+            guard let bytes = Data(base64Encoded: data, options: .ignoreUnknownCharacters) else { return }
+            try? bytes.write(to: temp)
+
+            let activity = UIActivityViewController(activityItems: [temp], applicationActivities: nil)
+            if let host = topViewController() {
+                activity.popoverPresentationController?.sourceView = host.view
+                host.present(activity, animated: true)
+            }
+        }
+
+        // MARK: 原生对话框
 
         private func topViewController() -> UIViewController? {
             let scene = UIApplication.shared.connectedScenes
@@ -372,7 +542,6 @@ struct WebContainer: UIViewRepresentable {
             present(alert) { completionHandler(nil) }
         }
 
-        /// 网页进程被系统回收（内存压力）时自动重载，否则会停在白屏
         func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
             loadedKey = ""
             parent.failure = nil

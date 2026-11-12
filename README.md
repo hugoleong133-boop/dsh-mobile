@@ -313,6 +313,41 @@ powercfg /change hibernate-timeout-ac 0
 
 ---
 
+### 7.7 手机端一次配好，之后不用管
+
+**先说清楚依赖关系**：走 tailnet 地址（`xxx.ts.net`）时，那个域名只有 Tailscale 在运行时才解析得出来。
+所以 Tailscale 必须处于连接状态 —— 这是这条路线的前提，换不掉。
+
+但**不需要每次手动打开**。iOS 可以把它设成按需连接，效果是常驻后台、随网络自动连：
+
+```
+iOS 设置 → 通用 → VPN与设备管理 → VPN → 点 Tailscale 那行右侧的 ⓘ → 打开「按需连接」
+```
+
+配好之后的使用流程就是：**点 DSH 图标 → 直接进去**，中间没有「先开 VPN」这一步。
+
+完整步骤：
+
+| 步骤 | 做什么 |
+|---|---|
+| 1 | App Store 装 Tailscale，登**和电脑同一个账号** |
+| 2 | 开按需连接（上面的路径） |
+| 3 | DSH App 里填 `http://<主机名>.<tailnet>.ts.net:8765/?k=<PIN>`，或扫 `pairing-qr.png` |
+| 4 | 验证顺序：先 Safari 打开同一地址，能进再回 App |
+
+**为什么必须先试 Safari**：Safari 不受 App 的 ATS 约束，它通了说明网络层没问题，剩下就只是 App 的事；
+它不通则是网络/Tailscale 的事。这一条能把问题一刀切成两半。（本项目就踩过：Safari 能开、App 黑屏，
+根因是 ATS 的 `NSAllowsArbitraryLoads` 被子键覆盖，与网络无关。）
+
+**如果连「后台有个 VPN 在跑」都不想要**：走 7.2 的 Funnel 路线，服务发布成公网 HTTPS，
+手机不装 Tailscale 也能开。代价是对公网暴露（有 PIN 保护）加上流量经中继。两条可以并存，
+也可以随时 `tailscale funnel reset` 收回。
+
+**后台会不会影响上网**：不会。Tailscale 默认只接管 `100.64.0.0/10` 这段 tailnet 地址，
+其余流量走原网络。状态栏会出现 VPN 图标，属于正常。
+
+---
+
 ## 8. 排错
 
 | 现象 | 原因 / 处理 |

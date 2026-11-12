@@ -361,6 +361,59 @@ iOS 设置 → 通用 → VPN与设备管理 → VPN → 点 Tailscale 那行右
 
 ---
 
+## 8.5 App 内与浏览器的差异（已知问题清单）
+
+`dsh-mobile` 的 App（`ios/`）是一个 WKWebView 壳。**WKWebView 不会自动处理一批浏览器原生能力**，
+而 DSH 前端依赖它们，于是表现为「浏览器能用、App 里点了没反应」。
+
+这不是网络问题，也不是代理问题。已经踩到并处理掉的：
+
+| 能力 | 谁在用 | 不处理的后果 | 当前方案 |
+|---|---|---|---|
+| `window.confirm` / `alert` | `dsh-session-delete-cascade` 等插件 | 点「删除会话」毫无反应（confirm 同步返回 false） | App 实现 `WKUIDelegate` 对话框 **+ 页面层兜底**（见下） |
+| `<input type="file">` | 附件上传 | 点附件按钮不弹选择器 | App 实现 `runOpenPanelWith`（**需 iOS 18.4+**，受 Apple API 限制） |
+| `navigator.clipboard` | 代码块复制、导出 | http 地址下不是安全上下文，复制按钮失效 | 注入 `execCommand('copy')` 兜底 |
+| `<a download>` + `URL.createObjectURL` | 导出会话日志、deliverables | 点导出什么都不发生（WKWebView 不下载 blob） | 注入脚本拦点击 → 消息桥接 → 系统分享面板 |
+| `window.open` / `target=_blank` | 部分链接 | 点了无反应 | App 实现 `createWebViewWith`，改为同窗口打开 |
+| 网页进程被系统回收 | — | 停在白屏 | `webViewWebContentProcessDidFinish` 自动重载 |
+
+### 删除会话为什么要页面层兜底
+
+`dsh-session-delete-cascade/lib/client.js:67` 用 `window.confirm` 做二次确认：
+
+```js
+if (!window.confirm("删除会话「" + label + "」？...")) return;
+```
+
+WKWebView 里若原生对话框没弹出来，这个调用会**同步返回 false**，函数立刻 return，
+用户看到的就是「点了没反应」。实测日志里一次点击产生一条 confirm 记录、零条 alert，
+确认卡在这一步。
+
+所以 `assets/mobile.js` 直接接管了这个按钮（`[data-dsh-cascade-delete]`）：
+在捕获阶段拦截点击 → 自己 `POST /session-delete-cascade/plan` 拿树 →
+弹**页面内自绘确认框** → 确认后 `POST /session-delete-cascade/delete` → 底部 toast 报结果。
+
+好处是**完全不依赖 App 的原生能力**，因此：
+
+- 换手机、换 App 版本都不受影响
+- 改完只需刷新页面，不用重新打包安装
+
+代价是复刻了插件的交互文案；如果哪天插件改名或换按钮属性，需要同步调整这段。
+用会话行末尾的垃圾桶图标即可；右键菜单里的同名项仍走原生 confirm，暂未接管。
+
+### 版本核对
+
+每次构建会把 `CFBundleVersion` 烧成 git 短哈希（workflow 里 `CURRENT_PROJECT_VERSION=$(git rev-parse --short=7 HEAD)`）。
+App 的「⋯」菜单和配对页底部都显示 `v1.0 (<哈希>)`，用来确认手机上装的到底是哪个包。
+
+### 诊断开关
+
+- `confirm` / `alert` 调用会一直上报到电脑的 `diag.jsonl`（只记文本，不改行为）
+- 布局探针默认不跑；需要时在地址后加 `#probe`，或在 Safari 控制台执行 `dshmProbe()`
+- `diag.jsonl` 超过 2 MB 会自动轮转为 `diag.1.jsonl`
+
+---
+
 ## 9. 文件清单
 
 | 文件 | 作用 |

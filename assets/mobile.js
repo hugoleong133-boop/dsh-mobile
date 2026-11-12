@@ -450,17 +450,18 @@
     }
   };
 
-  // 等界面挂载完再扫；DSH 首屏是异步渲染的
+  // 布局探针默认不自动跑：早期为了定位窄屏溢出才每次上报，
+  // 问题解决后没必要长期往磁盘写。需要时在地址后加 #probe，
+  // 或在 Safari 控制台里调 dshmProbe()。（confirm/alert 的上报不受影响，仍然常开）
   let fired = false;
   const schedule = () => {
     if (fired) return;
     fired = true;
     setTimeout(report, 3500);
   };
-  if (document.readyState === 'complete') schedule();
-  else window.addEventListener('load', schedule, { once: true });
-
-  // 手动触发：控制台里 dshmProbe() 或地址后加 #probe
   window.dshmProbe = report;
-  if (location.hash === '#probe') schedule();
+  if (location.hash === '#probe') {
+    if (document.readyState === 'complete') schedule();
+    else window.addEventListener('load', schedule, { once: true });
+  }
 })();

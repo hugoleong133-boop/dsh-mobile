@@ -22,7 +22,7 @@ import https from 'node:https';
 import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
-import { readFileSync, existsSync, writeFileSync, mkdirSync, appendFileSync } from 'node:fs';
+import { readFileSync, existsSync, writeFileSync, mkdirSync, appendFileSync, statSync, renameSync } from 'node:fs';
 import { createHash, createHmac, randomBytes, randomInt, timingSafeEqual } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
@@ -618,7 +618,14 @@ function handle(req, res) {
           ua: String(req.headers['user-agent'] || ''),
           report: JSON.parse(Buffer.concat(chunks).toString('utf8')),
         };
-        appendFileSync(path.join(HERE, 'diag.jsonl'), JSON.stringify(record) + '\n', 'utf8');
+        const diagPath = path.join(HERE, 'diag.jsonl');
+        // 长期运行会一直写，超过 2 MB 就轮转一份，避免无限增长
+        try {
+          if (existsSync(diagPath) && statSync(diagPath).size > 2 * 1024 * 1024) {
+            renameSync(diagPath, path.join(HERE, 'diag.1.jsonl'));
+          }
+        } catch { /* 轮转失败就继续追加 */ }
+        appendFileSync(diagPath, JSON.stringify(record) + '\n', 'utf8');
       } catch (err) {
         console.log(`[diag] write failed: ${err.message}`);
       }

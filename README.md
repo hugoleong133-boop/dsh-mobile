@@ -85,6 +85,21 @@ git init; git add -A; git commit -m "dsh-mobile"; git remote add origin <你的�
 macOS runner 会执行 `xcodegen generate` + `xcodebuild`（`CODE_SIGNING_ALLOWED=NO`），
 把 `DSHMobile.app` 打成 `Payload/` 再 zip 成 **未签名 IPA**，挂在 Artifacts 里。
 
+实测已经跑通，产物就是这个目录下的 `DSHMobile-unsigned.ipa`（69 KB，1m01s 构建）：
+
+```nPayload/DSHMobile.app/DSHMobile      Mach-O 64-bit, cputype 0x100000c (arm64), MH_EXECUTE
+Payload/DSHMobile.app/Info.plist  CFBundleIdentifier=local.dshm.mobile, MinimumOSVersion=16.0
+                                    NSAppTransportSecurity.NSAllowsArbitraryLoads=true
+Payload/DSHMobile.app/Assets.car  AppIcon 已编译进资源目录
+_CodeSignature                       不存在（未签名，装之前必须重签）
+```n
+两个踩过的坑，写在这里省一次排查：
+
+| 现象 | 原因 | 处理 |
+|---|---|---|
+| 作业 1 秒被 cancelled，注解写 `The configuration 'macos-14-arm64-us-default' is not supported` | **免费账户的私有仓库不提供 macOS runner**（只有 Linux） | 仓库设为 public；或升级付费计划 |
+| 仓库已公开但 `macos-14` 仍不可用 | 该标签在这账号下解析到不可用的 arm64 配置 | 改用 `macos-15`；`macos-15-intel` 也可用 |
+
 拿到 `DSHMobile-unsigned.ipa` 后，二选一装进 iPhone 15：
 
 | 方式 | 需要 | 有效期 |

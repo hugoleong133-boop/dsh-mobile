@@ -32,6 +32,7 @@ param(
   [int]$Port = 8765,
   [string]$SshTarget = '',
   [int]$SshPort = 22,
+  [string]$RemoteBind = '127.0.0.1',
   [switch]$Download
 )
 
@@ -239,19 +240,40 @@ switch ($Mode) {
 
   'ssh' {
     if (-not $SshTarget) {
-      throw 'ssh 模式需要 -SshTarget user@host（你家那台有公网 IP / IPv6 的机器）'
+      throw 'ssh 模式需要 -SshTarget user@host（你自己的服务器）'
     }
     $ssh = Resolve-Tool 'ssh'
     if (-not $ssh) { throw 'Windows 没带 OpenSSH 客户端：设置 → 可选功能 → OpenSSH 客户端' }
 
+    $bind = if ($RemoteBind) { $RemoteBind } else { '127.0.0.1' }
+    $hostPart = if ($PublicUrl) { $PublicUrl } else { "http://<服务器地址>:$Port" }
+
     Write-Host ''
-    Write-Host "  反向隧道  $SshTarget`:$Port  →  本机 127.0.0.1:$Port" -ForegroundColor DarkGray
-    Write-Host '  前提：对端 sshd 的 GatewayPorts 允许绑定 0.0.0.0（否则只能对端本机访问）。' -ForegroundColor DarkGray
+    Write-Host "  反向隧道  本机 127.0.0.1:$Port  →  $SshTarget`:$bind`:$Port" -ForegroundColor DarkGray
+    if ($bind -eq '127.0.0.1') {
+      Write-Host '  绑到服务器回环：外部访问要靠服务器上的 nginx 反代（见 server/nginx-dsh.conf）。' -ForegroundColor DarkGray
+    } else {
+      Write-Host '  绑到 0.0.0.0：需要服务器 sshd 开 GatewayPorts，且直接暴露明文端口。' -ForegroundColor Yellow
+    }
     Write-Host ''
-    Write-Host '  在家那台机器上访问：' -ForegroundColor Cyan
-    Show-PairUrl "http://<对端地址>:$Port" $pin
-    Write-Host '  Ctrl+C 断开。' -ForegroundColor DarkGray
-    & $ssh -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 `
-      -p $SshPort -R "0.0.0.0:${Port}:127.0.0.1:${Port}" $SshTarget
+    Show-PairUrl $hostPart $pin
+    Write-Host '  断线会自动重连（10 秒退避）。Ctrl+C 结束。' -ForegroundColor DarkGray
+
+    $attempt = 0
+    while ($true) {
+      $attempt += 1
+      Write-Host ("  [{0}] 连接 {1} …" -f (Get-Date -Format 'HH:mm:ss'), $SshTarget) -ForegroundColor DarkGray
+      & $ssh -N -T `
+        -o ExitOnForwardFailure=yes `
+        -o ServerAliveInterval=20 `
+        -o ServerAliveCountMax=3 `
+        -o TCPKeepAlive=yes `
+        -o StrictHostKeyChecking=accept-new `
+        -p $SshPort -R "${bind}:${Port}:127.0.0.1:${Port}" $SshTarget
+
+      $code = $LASTEXITCODE
+      Write-Host ("  [{0}] 隧道结束（exit {1}），10 秒后重试" -f (Get-Date -Format 'HH:mm:ss'), $code) -ForegroundColor Yellow
+      Start-Sleep -Seconds 10
+    }
   }
 }

@@ -61,7 +61,32 @@ cd D:\Ai\DSH\腳本\dsh-mobile
 
 ---
 
-## 3. 关于 IPA
+## 3. 手机端到底能做什么
+
+一句话：**手机连的是同一个 DSH 实例、同一个会话**，不是镜像、不是副本。所以电脑上跑的任务，手机上能看到并接管；手机上发的指令，进的就是公司电脑上那个正在跑的 agent。
+
+| 能力 | 能吗 | 依据 |
+|---|---|---|
+| 看到电脑上所有会话（含哪个在跑） | ✅ | 经代理调 `session/list` 实测：13 个会话，`running=true` 正确 |
+| 看到当前会话的正文 | ✅ | `session/page` 实测：17 条记录 / 34,716 字节，cursor 1614 |
+| 看到实时状态（队列、是否在跑） | ✅ | `session/state` 实测：`{cursor:1560, running:true, queue:[]}` |
+| 实时流式输出、工具调用卡片 | ✅ | WebSocket `/api/remote.mux` 公网 101 + 服务端帧；投递由 DSH 客户端自身完成 |
+| 发指令 / 发任务 | ✅ | `session/prompt` 与上面几个端点同一条 `/api` 通道、同一个 owner Peer |
+| 中途插话、取消 | ✅ | `session/prompt`（追加）+ `session/cancel` |
+| 审批弹窗、反问（ask_user_question） | ✅ | owner Peer 的 `interactions` 默认 `answer`；非 owner 才被限（`remote-access` README:87） |
+| 上传附件给会话 | ✅ | 落在**电脑**的附件目录 |
+| 浏览/下载电脑上的文件 | 走同一套客户端 bundle | 端点是 `workspaceFiles/list`、`/read`、`/stat`，需要 UI 生成的 scope id；这里没构造出合法 scope，未实测，但手机加载的是与桌面同一份前端代码 |
+| 关掉手机后任务继续跑 | ✅ | agent 在电脑进程里，手机断连不影响 |
+| 手机锁屏后再打开能追平进度 | 靠 DSH 自身的重连 + 基线 | `ConnectionController` 500ms→10s 退避重连、`ready` 帧后按 cursor 补齐；长时间睡眠未实测 |
+
+为什么手机有 owner 权限：`dsh-client-connection` 里 `browserPeer = new Peer(ctx, { principal: { kind: "owner" } })` —— 所有通过浏览器令牌认证的连接共用一个 owner Peer。代理铸造的就是这个令牌，所以手机 = 第二个 owner 端。
+
+**因此有一个副作用要记住**：两端同时输入会进同一个会话队列；两端都能点审批——谁先点生效。
+
+---
+
+## 4. 关于 IPA
+
 
 直接说清楚：**iOS 二进制必须在 macOS 上编译**（`xcodebuild` 只存在于 Xcode）。这台机器是 Windows，
 所以我没法在这里产出一个 `.ipa` 文件本身。给你的是两条都能拿到东西的路：
@@ -118,7 +143,7 @@ _CodeSignature                       不存在（未签名，装之前必须重�
 
 ---
 
-## 4. 实测结果
+## 5. 实测结果
 
 在这台机器上跑过的验收（`tests/health.mjs`，走局域网 IP，等价于手机的加载路径）：
 
@@ -156,7 +181,7 @@ node tests\health.mjs --url http://192.168.1.10:8765 --pin <PIN>
 
 ---
 
-## 5. 安全边界
+## 6. 安全边界
 
 这个代理握着的是 **DSH owner Peer**，权限等于本机全量（含 `pwsh` 的 danger-full-access）。
 所以设计上做了三层：
@@ -169,7 +194,7 @@ node tests\health.mjs --url http://192.168.1.10:8765 --pin <PIN>
 
 ---
 
-## 6. 跨网络：在家操作公司电脑
+## 7. 跨网络：在家操作公司电脑
 
 **不需要同一个 WiFi。** 代理监听 `0.0.0.0`，缺的从来不是「同一局域网」，而是一条能把流量送到公司电脑的路径。而且方向很关键：公司防火墙拦的是**入站**，所有可行方案都是**出站**连接。
 
@@ -259,7 +284,7 @@ powercfg /change hibernate-timeout-ac 0
 
 ---
 
-## 7. 排错
+## 8. 排错
 
 | 现象 | 原因 / 处理 |
 |---|---|
@@ -272,7 +297,7 @@ powercfg /change hibernate-timeout-ac 0
 
 ---
 
-## 8. 文件清单
+## 9. 文件清单
 
 | 文件 | 作用 |
 |---|---|

@@ -9,6 +9,45 @@
 (() => {
   const root = document.documentElement;
 
+  // 诊断：页面里每次调用 confirm/alert/prompt 都回报电脑（只记录，不改变行为）。
+  // 用来判断「删除会话没反应」到底是 confirm 没被调，还是弹窗没显示。
+  if (!window.__dshmDialogHooked) {
+    window.__dshmDialogHooked = true;
+    const report = (kind, text) => {
+      try {
+        fetch('/__m/diag', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            type: 'dialog',
+            kind,
+            text: String(text).slice(0, 300),
+            href: location.href,
+            ts: Date.now(),
+          }),
+          credentials: 'same-origin',
+        }).catch(() => {});
+      } catch { /* 上报失败不影响页面 */ }
+    };
+    const origConfirm = window.confirm;
+    window.confirm = function (msg) {
+      report('confirm', msg);
+      return origConfirm.apply(this, arguments);
+    };
+    const origAlert = window.alert;
+    window.alert = function (msg) {
+      report('alert', msg);
+      return origAlert.apply(this, arguments);
+    };
+    const origPrompt = window.prompt;
+    if (origPrompt) {
+      window.prompt = function (msg, def) {
+        report('prompt', msg);
+        return origPrompt.apply(this, arguments);
+      };
+    }
+  }
+
   // Safari「添加到主屏幕」时 navigator.standalone === true；
   // App 里的 WKWebView 里它是 undefined，只能靠 window.webkit 区分——
   // 之前漏了这条判断，导致 App 内安全区 CSS 一直没生效。

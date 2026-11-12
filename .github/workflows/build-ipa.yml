@@ -49,6 +49,7 @@ jobs:
             -configuration Release \
             -derivedDataPath build \
             -destination 'generic/platform=iOS' \
+            CURRENT_PROJECT_VERSION="$(git rev-parse --short=7 HEAD)" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \

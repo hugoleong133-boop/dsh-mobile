@@ -3,6 +3,15 @@ import UIKit
 import WebKit
 import UniformTypeIdentifiers
 
+/// 装包后肉眼核对版本用：构建号 = git 提交短哈希
+enum AppInfo {
+    static var versionLabel: String {
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
+        return "v\(version) (\(build))"
+    }
+}
+
 struct RootView: View {
     @EnvironmentObject private var store: EndpointStore
 
@@ -81,6 +90,11 @@ struct PairingView: View {
                     Text("建议顺序：局域网 → tailnet → Funnel。排在前面的越快。")
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
+
+                    Text("DSH Mobile " + AppInfo.versionLabel)
+                        .font(.system(size: 12, design: .monospaced))
+                        .foregroundStyle(.secondary.opacity(0.55))
+                        .frame(maxWidth: .infinity, alignment: .center)
                 }
                 .padding(24)
                 .foregroundStyle(.white)
@@ -156,7 +170,7 @@ struct SessionView: View {
             Button("在 Safari 打开") { UIApplication.shared.open(url) }
             Button("取消", role: .cancel) {}
         } message: {
-            Text(addressSummary)
+            Text(AppInfo.versionLabel + "\n\n" + addressSummary)
         }
     }
 
@@ -507,10 +521,18 @@ struct WebContainer: UIViewRepresentable {
             return controller
         }
 
-        private func present(_ alert: UIAlertController, fallback: @escaping () -> Void) {
-            guard let host = topViewController() else {
+        /// present 失败时的兜底路径全都在这里；
+        /// 优先用承载页面本身的窗口，比全局查找更不容易扑空。
+        private func present(_ alert: UIAlertController,
+                             from webView: WKWebView?,
+                             fallback: @escaping () -> Void) {
+            let host = webView?.window?.rootViewController ?? topViewController()
+            guard let host else {
                 fallback()
                 return
+            }
+            if host.presentedViewController != nil {
+                host.dismiss(animated: false)
             }
             host.present(alert, animated: true)
         }
@@ -521,7 +543,7 @@ struct WebContainer: UIViewRepresentable {
                      completionHandler: @escaping () -> Void) {
             let alert = UIAlertController(title: nil, message: message, preferredStyle: .alert)
             alert.addAction(UIAlertAction(title: "好", style: .default) { _ in completionHandler() })
-            present(alert) { completionHandler() }
+            present(alert, from: webView) { completionHandler() }
         }
 
         func webView(_ webView: WKWebView,
@@ -531,7 +553,7 @@ struct WebContainer: UIViewRepresentable {
             let alert = UIAlertController(title: nil, message: message, preferredStyle: .alert)
             alert.addAction(UIAlertAction(title: "取消", style: .cancel) { _ in completionHandler(false) })
             alert.addAction(UIAlertAction(title: "确定", style: .destructive) { _ in completionHandler(true) })
-            present(alert) { completionHandler(false) }
+            present(alert, from: webView) { completionHandler(false) }
         }
 
         func webView(_ webView: WKWebView,
@@ -545,7 +567,7 @@ struct WebContainer: UIViewRepresentable {
             alert.addAction(UIAlertAction(title: "确定", style: .default) { _ in
                 completionHandler(alert.textFields?.first?.text)
             })
-            present(alert) { completionHandler(nil) }
+            present(alert, from: webView) { completionHandler(nil) }
         }
 
         func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {

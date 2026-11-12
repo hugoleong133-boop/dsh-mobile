@@ -24,11 +24,15 @@
 	<true/>
 	<key>NSHumanReadableCopyright</key>
 	<string>local build</string>
-	<!-- 电脑上的 dsh-mobile 默认是 http://<局域网 IP>:8765，ATS 默认会拦截；
-	     这里放开明文加载，因为没有对外网暴露的场景，也不引入证书管理。 -->
+	<!-- 电脑上的 dsh-mobile 是明文 HTTP（局域网 IP 或 tailnet 的 ts.net 域名）。
+	     iOS 10+ 的规则：只要出现任一子键（NSAllowsLocalNetworking 等），
+	     NSAllowsArbitraryLoads 就会被整体忽略。所以 WKWebView 必须单独给
+	     NSAllowsArbitraryLoadsInWebContent，否则 Safari 能开、App 里黑屏。 -->
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsArbitraryLoads</key>
+		<true/>
+		<key>NSAllowsArbitraryLoadsInWebContent</key>
 		<true/>
 		<key>NSAllowsLocalNetworking</key>
 		<true/>

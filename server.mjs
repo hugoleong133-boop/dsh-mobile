@@ -22,7 +22,7 @@ import https from 'node:https';
 import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
-import { readFileSync, existsSync, writeFileSync, mkdirSync } from 'node:fs';
+import { readFileSync, existsSync, writeFileSync, mkdirSync, appendFileSync } from 'node:fs';
 import { createHash, createHmac, randomBytes, randomInt, timingSafeEqual } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
@@ -527,10 +527,45 @@ function handle(req, res) {
     return;
   }
 
+  // 布局探针回收端：mobile.js 扫出越界元素后 POST 上来，落到 diag.jsonl 供排查。
+  // 只接受已配对设备，避免任何路过的人往磁盘写东西。
+  if (pathname === '/__m/diag' && req.method === 'POST') {
+    if (!isAuthed(req)) {
+      res.writeHead(401, { 'content-type': 'text/plain; charset=utf-8' });
+      res.end('pair first\n');
+      return;
+    }
+    const chunks = [];
+    let size = 0;
+    req.on('data', (c) => {
+      size += c.length;
+      if (size > 262144) {
+        req.destroy();
+        return;
+      }
+      chunks.push(c);
+    });
+    req.on('end', () => {
+      try {
+        const record = {
+          at: new Date().toISOString(),
+          from: clientIp(req),
+          ua: String(req.headers['user-agent'] || ''),
+          report: JSON.parse(Buffer.concat(chunks).toString('utf8')),
+        };
+        appendFileSync(path.join(HERE, 'diag.jsonl'), JSON.stringify(record) + '\n', 'utf8');
+      } catch (err) {
+        console.log(`[diag] write failed: ${err.message}`);
+      }
+      res.writeHead(204);
+      res.end();
+    });
+    return;
+  }
+
   // 免认证的自检端点：人在外网时用来判断到底是代理挂了还是 DSH 挂了。
   // 只暴露端口与进程计数，不含 PIN、不含 cookie、不含密钥。
-  if (pathname === '/__m/status') {
-    // 先自愈：DSH 换端口后，第一个来查状态的请求就把上游纠正过来
+  if (pathname === '/__m/status') {    // 先自愈：DSH 换端口后，第一个来查状态的请求就把上游纠正过来
     let pids = dshPids();
     let ports = listenerPorts(pids);
     if (UP.port !== 0 && !ports.includes(UP.port)) {

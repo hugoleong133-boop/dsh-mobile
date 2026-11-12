@@ -6,7 +6,7 @@ struct RootView: View {
     @EnvironmentObject private var store: EndpointStore
 
     var body: some View {
-        if let endpoint = store.endpoint {
+        if let endpoint = store.active {
             SessionView(url: endpoint)
                 .ignoresSafeArea(.container, edges: .bottom)
         } else {
@@ -25,50 +25,65 @@ struct PairingView: View {
     var body: some View {
         ZStack {
             Color(red: 0.08, green: 0.08, blue: 0.09).ignoresSafeArea()
-            VStack(alignment: .leading, spacing: 18) {
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .fill(LinearGradient(colors: [Color(red: 0.29, green: 0.42, blue: 1.0),
-                                                  Color(red: 0.54, green: 0.29, blue: 1.0)],
-                                         startPoint: .topLeading, endPoint: .bottomTrailing))
-                    .frame(width: 64, height: 64)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .fill(LinearGradient(colors: [Color(red: 0.29, green: 0.42, blue: 1.0),
+                                                      Color(red: 0.54, green: 0.29, blue: 1.0)],
+                                             startPoint: .topLeading, endPoint: .bottomTrailing))
+                        .frame(width: 64, height: 64)
 
-                Text("连接这台电脑").font(.system(size: 24, weight: .semibold))
-                Text("在电脑上运行 dsh-mobile\\start.ps1，把打印出的地址填进来。之后这个 App 看到的就是电脑上同一个会话。")
-                    .font(.system(size: 14))
-                    .foregroundStyle(.secondary)
+                    Text("连接这台电脑").font(.system(size: 24, weight: .semibold))
+                    Text("把电脑上 start.ps1 / tunnel.ps1 打印的地址填进来。可以填多个（每行一个），App 会按顺序尝试，第一个连上的就用。")
+                        .font(.system(size: 14))
+                        .foregroundStyle(.secondary)
 
-                TextField("192.168.1.124:8765/?k=123456", text: $store.pairInput)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .keyboardType(.URL)
-                    .focused($focused)
-                    .font(.system(size: 16, design: .monospaced))
-                    .padding(14)
-                    .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 12))
+                    TextEditor(text: $store.pairInput)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .keyboardType(.URL)
+                        .focused($focused)
+                        .font(.system(size: 15, design: .monospaced))
+                        .frame(minHeight: 110)
+                        .padding(10)
+                        .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 12))
+                        .overlay(alignment: .topLeading) {
+                            if store.pairInput.isEmpty {
+                                Text("192.168.1.124:8765/?k=123456\nhttps://xxx.ts.net/?k=123456")
+                                    .font(.system(size: 15, design: .monospaced))
+                                    .foregroundStyle(.secondary.opacity(0.6))
+                                    .padding(.horizontal, 15)
+                                    .padding(.vertical, 18)
+                                    .allowsHitTesting(false)
+                            }
+                        }
 
-                Button {
-                    do {
-                        try store.pair(from: store.pairInput)
-                        error = nil
-                    } catch {
-                        self.error = error.localizedDescription
+                    Button {
+                        do {
+                            try store.pair(from: store.pairInput)
+                            error = nil
+                        } catch {
+                            self.error = error.localizedDescription
+                        }
+                    } label: {
+                        Text("连接").font(.system(size: 17, weight: .semibold))
+                            .frame(maxWidth: .infinity).padding(.vertical, 14)
+                            .background(Color(red: 0.29, green: 0.42, blue: 1.0), in: RoundedRectangle(cornerRadius: 12))
+                            .foregroundStyle(.white)
                     }
-                } label: {
-                    Text("连接").font(.system(size: 17, weight: .semibold))
-                        .frame(maxWidth: .infinity).padding(.vertical, 14)
-                        .background(Color(red: 0.29, green: 0.42, blue: 1.0), in: RoundedRectangle(cornerRadius: 12))
-                        .foregroundStyle(.white)
-                }
-                .buttonStyle(.plain)
+                    .buttonStyle(.plain)
 
-                if let error {
-                    Text(error).font(.system(size: 13)).foregroundStyle(.red)
-                }
+                    if let error {
+                        Text(error).font(.system(size: 13)).foregroundStyle(.red)
+                    }
 
-                Spacer()
+                    Text("建议顺序：局域网 → tailnet → Funnel。排在前面的越快。")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                }
+                .padding(24)
+                .foregroundStyle(.white)
             }
-            .padding(24)
-            .foregroundStyle(.white)
         }
         .onAppear { focused = true }
     }
@@ -85,8 +100,18 @@ struct SessionView: View {
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
-            WebContainer(url: url, reloadToken: reloadToken, failure: $failure)
-                .ignoresSafeArea(edges: .bottom)
+            WebContainer(
+                url: url,
+                reloadToken: reloadToken,
+                failure: $failure,
+                onFailure: {
+                    // 先清掉错误再试下一个；全部都失败才让面板出现
+                    failure = nil
+                    return store.advance()
+                },
+                onSuccess: { store.markGood() }
+            )
+            .ignoresSafeArea(edges: .bottom)
 
             if let failure {
                 FailurePanel(
@@ -94,6 +119,11 @@ struct SessionView: View {
                     message: failure,
                     onRetry: {
                         self.failure = nil
+                        reloadToken += 1
+                    },
+                    onRestart: {
+                        self.failure = nil
+                        store.restart()
                         reloadToken += 1
                     },
                     onRepair: { store.forget() }
@@ -118,12 +148,23 @@ struct SessionView: View {
                 failure = nil
                 reloadToken += 1
             }
+            Button("尝试下一个地址") {
+                failure = nil
+                if store.advance() { reloadToken += 1 }
+            }
             Button("重新配对", role: .destructive) { store.forget() }
             Button("在 Safari 打开") { UIApplication.shared.open(url) }
             Button("取消", role: .cancel) {}
         } message: {
-            Text(url.absoluteString)
+            Text(addressSummary)
         }
+    }
+
+    private var addressSummary: String {
+        let list = store.endpoints.enumerated().map { index, item in
+            (index == store.activeIndex ? "▶ " : "   ") + item.absoluteString
+        }
+        return list.joined(separator: "\n")
     }
 }
 
@@ -132,6 +173,7 @@ struct FailurePanel: View {
     let url: URL
     let message: String
     let onRetry: () -> Void
+    let onRestart: () -> Void
     let onRepair: () -> Void
 
     var body: some View {
@@ -152,6 +194,8 @@ struct FailurePanel: View {
             HStack(spacing: 10) {
                 Button("重试", action: onRetry)
                     .buttonStyle(.borderedProminent)
+                Button("全部重试", action: onRestart)
+                    .buttonStyle(.bordered)
                 Button("在 Safari 打开") { UIApplication.shared.open(url) }
                     .buttonStyle(.bordered)
                 Button("重新配对", action: onRepair)
@@ -159,12 +203,12 @@ struct FailurePanel: View {
             }
             .font(.system(size: 14))
 
-            Text("Safari 能打开、这里不行 → 多半是这台机器连不上；先确认手机 Tailscale 在线。")
+            Text("所有候选地址都试过了才显示这个面板。")
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
         }
         .padding(18)
-        .frame(maxWidth: 420)
+        .frame(maxWidth: 440)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 }
@@ -174,6 +218,8 @@ struct WebContainer: UIViewRepresentable {
     let url: URL
     let reloadToken: Int
     @Binding var failure: String?
+    let onFailure: () -> Bool
+    let onSuccess: () -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -190,27 +236,34 @@ struct WebContainer: UIViewRepresentable {
         view.scrollView.contentInsetAdjustmentBehavior = .never
         view.isOpaque = false
         view.backgroundColor = UIColor(red: 0.08, green: 0.08, blue: 0.09, alpha: 1)
-        view.load(URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20))
-        context.coordinator.loaded = reloadToken
+        context.coordinator.load(url, token: reloadToken, in: view)
         return view
     }
 
     func updateUIView(_ view: WKWebView, context: Context) {
-        guard context.coordinator.loaded != reloadToken else { return }
-        context.coordinator.loaded = reloadToken
-        view.load(URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20))
+        context.coordinator.load(url, token: reloadToken, in: view)
     }
 
     final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
         private let parent: WebContainer
-        var loaded = -1
+        private var loadedKey = ""
 
         init(_ parent: WebContainer) {
             self.parent = parent
         }
 
+        /// 地址或 reloadToken 任一变化才重新加载，避免 SwiftUI 每帧都刷新
+        func load(_ url: URL, token: Int, in view: WKWebView) {
+            let key = "\(url.absoluteString)#\(token)"
+            guard key != loadedKey else { return }
+            loadedKey = key
+            let request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 15)
+            view.load(request)
+        }
+
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             parent.failure = nil
+            parent.onSuccess()
         }
 
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
@@ -225,11 +278,15 @@ struct WebContainer: UIViewRepresentable {
 
         private func report(_ error: Error) {
             let ns = error as NSError
-            // 用户自己取消/重定向打断的不算失败，别吓人
+            // 用户自己取消/重定向打断的不算失败
             if ns.domain == NSURLErrorDomain && ns.code == NSURLErrorCancelled { return }
+
+            // 有下一个候选地址就直接切，别让用户看见错误
+            if parent.onFailure() { return }
+
             var text = "\(ns.localizedDescription)（\(ns.domain) \(ns.code)）"
-            if ns.code == -1022 || ns.code == -1004 || ns.code == -1009 {
-                text += "\n\n提示：无法建立连接。检查电脑上 8765 是否在跑（/__m/status），以及手机 Tailscale 是否在线。"
+            if ns.code == -1022 || ns.code == -1004 || ns.code == -1009 || ns.code == -1001 {
+                text += "\n\n无法建立连接。检查电脑上 8765 是否在跑（/__m/status），以及这个网络能不能到那个地址。"
             }
             parent.failure = text
         }

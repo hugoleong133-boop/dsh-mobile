@@ -198,7 +198,7 @@ node tests\health.mjs --url http://192.168.1.10:8765 --pin <PIN>
 
 **不需要同一个 WiFi。** 代理监听 `0.0.0.0`，缺的从来不是「同一局域网」，而是一条能把流量送到公司电脑的路径。而且方向很关键：公司防火墙拦的是**入站**，所有可行方案都是**出站**连接。
 
-### 6.1 先判断公司给的是哪种「静态 IP」
+### 7.1 先判断公司给的是哪种「静态 IP」
 
 这两种意思完全相反，别混：
 
@@ -216,7 +216,7 @@ node tests\health.mjs --url http://192.168.1.10:8765 --pin <PIN>
 
 它输出本机所有 IPv4（区分 private / public / CGNAT）、出口公网 IP 与归属、443 与 DNS 出站是否通，然后给判定：`public-direct` / `nat` / `cgnat`。
 
-### 6.2 三条路线
+### 7.2 三条路线
 
 | 路线 | 需要什么 | 公司 IT 要不要配合 | 域名稳定性 |
 |---|---|---|---|
@@ -241,7 +241,7 @@ node tests\health.mjs --url http://192.168.1.10:8765 --pin <PIN>
 .\tunnel.ps1 -Mode status
 ```
 
-### 6.3 这条链路我实测过
+### 7.3 这条链路我实测过
 
 在真实公网隧道上跑完整流程（cloudflared quick tunnel，本机 → Cloudflare → 回来）：
 
@@ -257,7 +257,7 @@ node tests\health.mjs --url http://192.168.1.10:8765 --pin <PIN>
 
 第 4 条是关键：**进度同步走的就是这条 WebSocket**，公网 101 打通，说明「家里看电脑上的实时进度」成立。测完立刻杀了隧道（Cloudflare 侧回 502，源站已消失）。
 
-### 6.4 公司电脑没人值守时要处理的三件事
+### 7.4 公司电脑没人值守时要处理的三件事
 
 ```powershell
 # 1) 登录自启（当前用户，不需要管理员）；会把 DSH 一起拉起来
@@ -276,11 +276,40 @@ powercfg /change hibernate-timeout-ac 0
 
 自检：`curl http://127.0.0.1:8765/__m/status`，看 `upstream.port` 与 `upstream.dshListening` 是否一致。
 
-### 6.5 安全边界（跨网络后才真正要紧）
+### 7.5 安全边界（跨网络后才真正要紧）
 
 - 代理握着的是 **DSH owner Peer**，权限等于本机全量（含 `pwsh` 的 danger-full-access）。一条公网 URL + 6 位 PIN，等于把工作站挂在互联网上。
 - 所以：**优先 tailscale / ssh**，它们不对公网开放端口；用 cloudflared 时务必开着就开、用完就关，别让它常驻。
 - 隧道域名变了就要重新配对（`dshm` cookie 是 host-only）。`/__m/status` 特意做成免认证，只吐端口和进程数，不含 PIN、cookie、密钥。
+
+---
+
+### 7.6 换个网络，地址会变吗
+
+会。四种地址各管一种场合，手机里填哪个决定你以后要不要反复改：
+
+| 地址类型 | 示例 | 在家能用 | 在外/公司能用 | 稳定性 |
+|---|---|---|---|---|
+| 局域网 IP | `192.168.1.124:8765` | 能 | 不能，出门即失效 | 固定，但只在本网 |
+| **tailscale MagicDNS** | `dsh-pc.tailxxxx.ts.net:8765` | 能 | 能 | **固定，配一次长期有效** |
+| cloudflared quick tunnel | `xxx-yyy.trycloudflare.com` | 能 | 能 | 每次重启换域名，要重新配对 |
+| cloudflared named tunnel | `dsh.你的域名.com` | 能 | 能 | 固定（要自己的域名 + 配置） |
+
+**结论：想「在家连公司电脑」又不想到处改地址，就用 tailscale，并且一开始就拿 tailnet 地址去配对。**
+那个地址跟地理位置无关 —— 公司电脑在线，你在家、在咖啡厅、用 4G 访问的都是同一个 URL。
+
+配错也不致命：换地址只是让浏览器重新存一次 cookie，6 位 PIN 不变，App 里点「⋯」→ 重新配对输一次即可。
+
+`start.ps1` 检测到 tailscale 在运行时会把两个地址都打印出来，拿绿色的那个去配对：
+
+```
+  任何网络都能用（tailscale，推荐拿这个去配对）：
+    http://dsh-pc.tailxxxx.ts.net:8765/?k=123456
+
+  仅同一局域网（换网络就失效）：
+    http://192.168.1.10:8765/?k=123456
+  PIN：      123456
+```
 
 ---
 

@@ -168,8 +168,39 @@ if ($Background) {
 $scheme = if ($TlsCert -and $TlsKey) { 'https' } else { 'http' }
 $url = if ($PublicUrl) { "$PublicUrl/?k=$effectivePin" } else { "${scheme}://${lanIp}:$Port/?k=$effectivePin" }
 
+# 同一台机器在家/公司/外面都能用的地址只有隧道给的。
+# tailscale 的 MagicDNS 名是全局固定，用它配对一次，之后换网络不用再改。
+$tailnetUrl = $null
+$ts = Get-Command tailscale -ErrorAction SilentlyContinue
+if (-not $ts) {
+  $localTs = Join-Path $here 'tools\tailscale.exe'
+  if (Test-Path $localTs) { $ts = $localTs }
+}
+if ($ts) {
+  try {
+    $st = & $ts status --json 2>$null | ConvertFrom-Json
+    if ($st.BackendState -eq 'Running') {
+      $dns = $st.Self.DNSName
+      $tsIp = (& $ts ip -4 2>$null | Select-Object -First 1)
+      $hostPart = if ($dns) { $dns.TrimEnd('.') } else { $tsIp }
+      if ($hostPart) { $tailnetUrl = "${scheme}://${hostPart}:$Port/?k=$effectivePin" }
+    }
+  } catch { }
+}
+
 Write-Host ''
-Write-Host "  手机打开： $url" -ForegroundColor Cyan
+if ($tailnetUrl) {
+  Write-Host "  任何网络都能用（tailscale，推荐拿这个去配对）：" -ForegroundColor Green
+  Write-Host "    $tailnetUrl" -ForegroundColor Green
+  Write-Host ''
+  Write-Host "  仅同一局域网（换网络就失效）：" -ForegroundColor DarkGray
+  Write-Host "    $url" -ForegroundColor DarkGray
+} else {
+  Write-Host "  手机打开： $url" -ForegroundColor Cyan
+  Write-Host ''
+  Write-Host "  注意：这是局域网地址。要在家连公司电脑，装 tailscale 后这里会多给一个固定地址，" -ForegroundColor Yellow
+  Write-Host "  或者用 .\tunnel.ps1 起隧道拿临时域名（每次重启会变）。" -ForegroundColor Yellow
+}
 Write-Host "  PIN：      $effectivePin" -ForegroundColor Cyan
 Write-Host ''
 

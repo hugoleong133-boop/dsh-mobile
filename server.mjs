@@ -183,6 +183,14 @@ if (autoUpstream) {
   if (found === 0) {
     console.error('[upstream] 现在没发现监听的 DeepSeek Harness；代理继续跑，收到请求时会再探。');
   }
+  // 没有流量时也定期校准一次，别等到用户点开页面才发现端口变了
+  setInterval(() => {
+    try {
+      discoverUpstream(false);
+    } catch {
+      /* 探测失败不影响服务 */
+    }
+  }, 30_000).unref();
 }
 
 
@@ -521,8 +529,14 @@ function handle(req, res) {
   // 免认证的自检端点：人在外网时用来判断到底是代理挂了还是 DSH 挂了。
   // 只暴露端口与进程计数，不含 PIN、不含 cookie、不含密钥。
   if (pathname === '/__m/status') {
-    const pids = dshPids();
-    const ports = listenerPorts(pids);
+    // 先自愈：DSH 换端口后，第一个来查状态的请求就把上游纠正过来
+    let pids = dshPids();
+    let ports = listenerPorts(pids);
+    if (UP.port !== 0 && !ports.includes(UP.port)) {
+      discoverUpstream(true);
+      pids = dshPids();
+      ports = listenerPorts(pids);
+    }
     const payload = {
       ok: ports.length > 0 && ports.includes(UP.port),
       proxy: { port: ARGS.port, listen: ARGS.listen, tls: Boolean(ARGS.tlsCert) },

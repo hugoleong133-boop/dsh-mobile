@@ -10,12 +10,17 @@
   .\firewall.ps1 -Port 8765
 
 .EXAMPLE
+  # 网络被判为 Public 时（Windows 默认拦入站），临时放开当前网络的这一端口
+  .\firewall.ps1 -Port 8765 -AllowPublic
+
+.EXAMPLE
   .\firewall.ps1 -Port 8765 -Remove
 #>
 [CmdletBinding()]
 param(
   [int]$Port = 8765,
-  [switch]$Remove
+  [switch]$Remove,
+  [switch]$AllowPublic
 )
 
 $ErrorActionPreference = 'Stop'
@@ -32,6 +37,9 @@ if ($Remove) {
   exit 0
 }
 
+$profiles = if ($AllowPublic) { "Any" } else { "Private, Domain" }
+if ($AllowPublic) { Write-Host "  注意：将对该端口放开所有网络类型（含公用网络）。" -ForegroundColor Yellow }
+
 Get-NetFirewallRule -DisplayName $name -ErrorAction SilentlyContinue | Remove-NetFirewallRule
 
 New-NetFirewallRule `
@@ -40,7 +48,7 @@ New-NetFirewallRule `
   -Action Allow `
   -Protocol TCP `
   -LocalPort $Port `
-  -Profile Private, Domain `
+  -Profile $profiles `
   -Description "dsh-mobile: 让 iPhone 访问本机 DSH Web 会话" | Out-Null
 
 Write-Host "已放行 TCP $Port（仅专用/域网络）。" -ForegroundColor Green

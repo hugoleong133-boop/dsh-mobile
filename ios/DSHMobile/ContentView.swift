@@ -438,6 +438,12 @@ struct WebContainer: UIViewRepresentable {
         // `<input type="file">` 在 WKWebView 里不会自己弹面板，必须实现这个回调。
         // DSH 的附件上传就是靠它，缺了这一层，点附件按钮毫无反应。
 
+        /// `<input type="file">` 在 WKWebView 里不会自己弹面板，必须实现这个回调。
+        /// DSH 的附件上传就是靠它，缺了这一层，点附件按钮毫无反应。
+        ///
+        /// 注意：`WKOpenPanelParameters` 在当前 SDK 里标了 iOS 18.4+，
+        /// 所以这里加可用性标注；低于 18.4 的系统上文件选择仍然不可用。
+        @available(iOS 18.4, *)
         func webView(_ webView: WKWebView,
                      runOpenPanelWith parameters: WKOpenPanelParameters,
                      initiatedByFrame frame: WKFrameInfo,

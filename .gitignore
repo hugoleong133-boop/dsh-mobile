@@ -1,0 +1,24 @@
+# 运行时产物
+state.json
+dsh-mobile.pid
+dsh-mobile.log
+dsh-mobile.err.log
+start.out
+start.err
+pair-url.txt
+pairing-qr.png
+
+# iOS 构建
+ios/build/
+ios/DerivedData/
+ios/*.xcodeproj/
+ios/*.ipa
+ios/Payload/
+*.mobileprovision
+*.p12
+
+# 通用
+__pycache__/
+*.pyc
+.DS_Store
+Thumbs.db

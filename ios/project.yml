@@ -1,0 +1,45 @@
+name: DSHMobile
+options:
+  bundleIdPrefix: local.dshm
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+  groupSortPosition: top
+  generateEmptyDirectories: false
+
+targets:
+  DSHMobile:
+    type: application
+    platform: iOS
+    sources:
+      - path: DSHMobile
+        # Info.plist 走 INFOPLIST_FILE，不能再当资源进 Copy Bundle Resources，
+        # 否则报 "Multiple commands produce Info.plist"
+        excludes:
+          - "Info.plist"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: local.dshm.mobile
+        PRODUCT_NAME: DSHMobile
+        MARKETING_VERSION: "1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        INFOPLIST_FILE: DSHMobile/Info.plist
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SWIFT_VERSION: "5.9"
+        IPHONEOS_DEPLOYMENT_TARGET: "16.0"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ENABLE_BITCODE: "NO"
+        CODE_SIGN_IDENTITY: ""
+        CODE_SIGNING_REQUIRED: "NO"
+        CODE_SIGNING_ALLOWED: "NO"
+
+# xcodebuild -scheme DSHMobile 必须能找到这个 scheme；不靠 XcodeGen 的默认行为
+schemes:
+  DSHMobile:
+    build:
+      targets:
+        DSHMobile: all
+    run:
+      config: Release
+    archive:
+      config: Release

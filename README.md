@@ -1,0 +1,197 @@
+# dsh-mobile · 把 DSH 变成手机能看能指挥的「工作模式」
+
+豆包那个能力拆开是三件事：**同一份会话**、**两端都能看到当前进度**、**指令从手机下、活在本机干**。
+DSH 本身已经有前两件（会话和 live 事件都挂在同一个 Host 上），缺的只是**让第二台设备能够合法接进来**。
+
+这个目录补的就是那一块：给正在运行的 DSH 套一层带门禁的反向代理，再给手机端注入主屏幕 App 所需的标签。
+不修改 DSH 任何文件，不改 profile，不重启 App。
+
+---
+
+## 1. 为什么不能直接 `dsh web --host 0.0.0.0`
+
+读过 `@deepseek-ai/dsh-host-webserver` 与 `dsh-client-connection` 的实现，三条硬约束决定了做法：
+
+| 约束 | 代码位置 | 后果 |
+|---|---|---|
+| `host` 只接受具体 IP 字面量，未指定地址直接拒绝加载 | `dsh-host-webserver` config schema | 没有「监听所有网卡」这个选项 |
+| `/api` 每个请求先过 Host/Origin 围栏：Host 必须是 loopback、监听器绑定 IP、或 `trustedHosts` 条目 | `client-connection/lib/index.js:240 isTrustedApiRequest` | 改绑局域网 IP 后，`127.0.0.1` 反而会被 403 |
+| Gateway WebSocket 与 RPC 都要求已认证的 browser Peer；令牌是**每进程随机**，只在 `dsh web` 启动时打印一次 | `BrowserAuth`、`launchToken` | 第二台设备没有途径拿到那个 token |
+
+另有一条可用线索：浏览器会话 cookie 不是随机串，而是
+`v1.<b64url(payload)>.<HMAC-SHA256(secret, body)>`，payload 里绑 `authority`（HTTP 下就是 `host:port`），
+`secret` 持久化在 `$DSH_HOME/.credentials.yaml` 的 `client-connection/browser-session` 记录里。
+
+于是最干净的接法出现了：**代理把 Host/Origin 重写回 `127.0.0.1:<port>`，并用同一份 secret 现场铸造 cookie 注入。**
+DSH 全程以为请求来自本机浏览器，围栏和认证一个都没绕过，也不需要 patch 任何东西。
+
+```
+iPhone Safari ──► dsh-mobile:8765 ──► 127.0.0.1:55514 (DSH Web GUI)
+   ① PIN 换 dshm cookie        ② Host/Origin 重写 + 注入 dsh-auth cookie
+   ③ index 注入主屏幕 App 标签   ④ WebSocket 原样透传
+```
+
+---
+
+## 2. 三步跑起来
+
+```powershell
+cd D:\Ai\DSH\腳本\dsh-mobile
+
+# 1) 放行防火墙（只有这一步要管理员；Windows 通常也会自己弹窗问）
+.\firewall.ps1 -Port 8765
+
+# 2) 起代理（前台；加 -Background 变常驻）
+.\start.ps1 -Qr
+```
+
+输出：
+
+```
+  手机打开： http://192.168.1.10:8765/?k=123456
+  PIN：      123456
+```
+
+3. iPhone 上：**Safari** 打开那个地址（或扫 `pairing-qr.png`）→ 点「连接」→ 分享按钮 → **添加到主屏幕**。
+
+从主屏幕图标进去就是全屏，没有地址栏，和电脑上看到的是**同一个会话的实时状态**：
+电脑在跑的工具调用、流式输出，手机上同步在滚；手机上发的话直接进这台电脑正在跑的会话。
+
+停止：`.\stop.ps1`。
+
+---
+
+## 3. 关于 IPA
+
+直接说清楚：**iOS 二进制必须在 macOS 上编译**（`xcodebuild` 只存在于 Xcode）。这台机器是 Windows，
+所以我没法在这里产出一个 `.ipa` 文件本身。给你的是两条都能拿到东西的路：
+
+### A. 主屏幕 App（推荐，30 秒，无需签名、永不过期）
+
+DSH 的 Web GUI 自带 `manifest.webmanifest`（`display: standalone`）和 `apple-touch-icon`，
+代理又注入了 `apple-mobile-web-app-capable`、`viewport-fit=cover`、安全区 CSS。
+Safari「添加到主屏幕」之后：独立窗口、无地址栏、自己图标、保留会话 cookie 30 天。
+
+功能上和下面那个 IPA 是同一份东西——因为 IPA 里包的也是这个页面。
+
+### B. 真 IPA（`ios/` 已备好完整工程）
+
+```powershell
+# 把 dsh-mobile 整个目录推到一个 GitHub 仓库（私有也行）
+git init; git add -A; git commit -m "dsh-mobile"; git remote add origin <你的仓库>; git push -u origin main
+```
+
+然后仓库页面 → **Actions** → `build-ipa` → **Run workflow**。
+macOS runner 会执行 `xcodegen generate` + `xcodebuild`（`CODE_SIGNING_ALLOWED=NO`），
+把 `DSHMobile.app` 打成 `Payload/` 再 zip 成 **未签名 IPA**，挂在 Artifacts 里。
+
+拿到 `DSHMobile-unsigned.ipa` 后，二选一装进 iPhone 15：
+
+| 方式 | 需要 | 有效期 |
+|---|---|---|
+| **Sideloadly**（省事） | Windows PC + Apple ID，把 ipa 拖进去点 Start | 免费账号 7 天，到期重签 |
+| **zsign 手动签** | `.p12` + `.mobileprovision` | 看证书 |
+
+```powershell
+.\sign-windows.ps1 -Ipa DSHMobile-unsigned.ipa -P12 cert.p12 -P12Password 123456 -Provision profile.mobileprovision
+```
+
+`ios/` 里的壳做了三件事：记住配对地址、WKWebView 加载、`NSAllowsArbitraryLoads`（局域网是 http，ATS 默认会拦）。
+业务逻辑一行都没有——真正的 agent 始终跑在电脑上。
+
+---
+
+## 4. 实测结果
+
+在这台机器上跑过的验收（`tests/health.mjs`，走局域网 IP，等价于手机的加载路径）：
+
+```
+pair: ok (dshm set)
+index: 200 41964 bytes
+inject viewport-fit=cover: ok
+inject apple-mobile-web-app-capable: ok
+inject /__m/mobile.css: ok
+inject /__m/mobile.js: ok
+assets: 89 URLs, ok 89, bad 0, 20.91 MiB
+websocket: ok (101 accept=yes)
+
+RESULT: PASS — 手机端可以完整加载这个会话
+```
+
+复现：
+
+```powershell
+node tests\health.mjs --url http://192.168.1.10:8765 --pin <PIN>
+```
+
+其它已验证的边界：
+
+| 场景 | 结果 |
+|---|---|
+| 未配对访问 `/` | 200，返回配对页 |
+| `?k=<PIN>` | 303 + `Set-Cookie: dshm=…; HttpOnly; SameSite=Lax`，跳回干净 URL |
+| 错误 PIN | 401 |
+| 无 `dshm` cookie 打 `/api/*` | 401（代理层就挡住，不触达 DSH） |
+| 伪造 `dshm` cookie 打 WebSocket | 401 |
+| 有效 cookie 打 WebSocket | **101**，随后收到 DSH 的 ping 帧 |
+| 静态资源穿透 | `/assets/*`、`/plugins/??…`、`/manifest.webmanifest`、`/apple-touch-icon.png` 全部 200 |
+| 手机中途断连 | 已加 socket error 兜底，守护进程不再被 ECONNRESET 打死 |
+
+---
+
+## 5. 安全边界
+
+这个代理握着的是 **DSH owner Peer**，权限等于本机全量（含 `pwsh` 的 danger-full-access）。
+所以设计上做了三层：
+
+1. **PIN 门禁**：6 位数字在代理层校验，只换 `dshm` HttpOnly cookie；PIN 与设备密钥存在 `state.json`，重启不变。
+2. **只在本机回环上认证 DSH**：DSH 侧看到的永远是 `127.0.0.1:55514`，它自己的围栏（DNS rebinding、跨站）继续生效。
+3. **防火墙只放专用/域网络**：`firewall.ps1` 不对公用网络开端口。
+
+`state.json` 里有 `deviceSecret`，`mint_dsh_cookie.py` 那类工具能直接铸造 DSH cookie —— 这两个文件按私钥对待，别进仓库。
+
+---
+
+## 6. 不在同一个 Wi-Fi 时
+
+代理监听 `0.0.0.0`，所以任何能把流量送进来的隧道都能用：
+
+```powershell
+# Tailscale：手机装 Tailscale，用 tailnet 里的地址
+.\start.ps1 -PublicUrl "https://你的机器.tailnet-name.ts.net" -Background
+
+# Cloudflare Tunnel
+cloudflared tunnel --url http://127.0.0.1:8765
+```
+
+`-PublicUrl` 只影响打印的二维码内容，代理行为不变。
+
+---
+
+## 7. 排错
+
+| 现象 | 原因 / 处理 |
+|---|---|
+| 手机打不开，电脑上 `curl` 自己 LAN IP 正常 | 防火墙入站未放行：`.\firewall.ps1 -Port 8765` |
+| 配对页一直转、点连接没反应 | 端口 8765 被别的进程占了，`-Port 8766` 换一个 |
+| 打开了但白屏 | 先跑 `tests\health.mjs`；若 `assets` 有 bad 项，看是不是 DSH 换了 rev（重启 DSH 后 rev 变，属正常） |
+| `401 dsh web authentication required` | 代理没读到 `.credentials.yaml`；确认 DSH 至少启动过一次，或 `--credentials` 指对 |
+| 手机上看不到电脑上正在跑的对话 | 两端是不是连的同一个 DSH 实例；代理 `--upstream-port` 要等于 DSH 实际监听端口 |
+| 后台进程莫名消失 | 它被启动它的那个终端带走了；用 `.\start.ps1 -Background` 起，别用 `Start-Job` |
+
+---
+
+## 8. 文件清单
+
+| 文件 | 作用 |
+|---|---|
+| `server.mjs` | 代理本体：PIN 门禁、cookie 铸造、Host/Origin 重写、HTML 注入、WebSocket 透传 |
+| `assets/mobile.css` `assets/mobile.js` | 注入到 DSH 页面的安全区/键盘/双击缩放修正 |
+| `assets/icon-*.png` | 主屏幕图标 |
+| `start.ps1` `stop.ps1` | 起停，自动探测 DSH 端口、局域网 IP、生成 PIN 与二维码 |
+| `firewall.ps1` | 放行入站端口（需管理员） |
+| `sign-windows.ps1` | 把未签名 IPA 用 zsign 重签 |
+| `ios/` | SwiftUI + WKWebView 壳工程（XcodeGen 描述） |
+| `.github/workflows/build-ipa.yml` | macOS runner 编译并产出未签名 IPA |
+| `tests/health.mjs` | 端到端自检：配对 → index → 89 个模块 URL → WebSocket |
+| `state.json` | PIN 与设备密钥（敏感） |

@@ -1,0 +1,64 @@
+/*
+ * dsh-mobile 注入样式。
+ * 只做三件事：安全区、输入框缩放、滚动与点击手感。
+ * 不动 DSH 自己的布局变量——它的 sidebar 在 <1024px 已经自动收成 rail。
+ */
+
+:root {
+  --dshm-safe-top: env(safe-area-inset-top, 0px);
+  --dshm-safe-bottom: env(safe-area-inset-bottom, 0px);
+  --dshm-safe-left: env(safe-area-inset-left, 0px);
+  --dshm-safe-right: env(safe-area-inset-right, 0px);
+}
+
+/* iOS 会在聚焦 <16px 的输入框时强制放大整个页面；把表单控件钉在 16px 以上 */
+input,
+textarea,
+select,
+[contenteditable='true'] {
+  font-size: max(16px, 1em);
+}
+
+/* 去掉长按弹菜单与点击高亮，更接近原生手感 */
+body {
+  -webkit-tap-highlight-color: transparent;
+  -webkit-touch-callout: none;
+  overscroll-behavior-y: none;
+}
+
+/* 代码块、表格在窄屏可横向滚动，不要撑破布局 */
+pre,
+table {
+  max-width: 100%;
+}
+
+pre {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* 独立窗口（主屏幕图标启动）时给安全区留白 */
+html[data-dshm-standalone] body {
+  padding-top: var(--dshm-safe-top);
+  padding-bottom: var(--dshm-safe-bottom);
+  padding-left: var(--dshm-safe-left);
+  padding-right: var(--dshm-safe-right);
+  min-height: 100dvh;
+  box-sizing: border-box;
+}
+
+/* 键盘弹起时用 visualViewport 的高度，避免底部输入框被顶出屏幕 */
+html[data-dshm-keyboard] body {
+  height: var(--dshm-viewport-height, 100dvh);
+}
+
+/* 窄屏下把过大的标题回收一点，长会话更好扫 */
+@media (max-width: 480px) {
+  body {
+    font-size: 15px;
+  }
+
+  h1 {
+    font-size: 1.25rem;
+  }
+}

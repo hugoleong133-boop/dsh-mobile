@@ -87,12 +87,14 @@ macOS runner 会执行 `xcodegen generate` + `xcodebuild`（`CODE_SIGNING_ALLOWE
 
 实测已经跑通，产物就是这个目录下的 `DSHMobile-unsigned.ipa`（69 KB，1m01s 构建）：
 
-```nPayload/DSHMobile.app/DSHMobile      Mach-O 64-bit, cputype 0x100000c (arm64), MH_EXECUTE
-Payload/DSHMobile.app/Info.plist  CFBundleIdentifier=local.dshm.mobile, MinimumOSVersion=16.0
-                                    NSAppTransportSecurity.NSAllowsArbitraryLoads=true
-Payload/DSHMobile.app/Assets.car  AppIcon 已编译进资源目录
+```
+Payload/DSHMobile.app/DSHMobile      Mach-O 64-bit, cputype 0x100000c (arm64), MH_EXECUTE
+Payload/DSHMobile.app/Info.plist     CFBundleIdentifier=local.dshm.mobile, MinimumOSVersion=16.0
+                                     NSAppTransportSecurity.NSAllowsArbitraryLoads=true
+Payload/DSHMobile.app/Assets.car     AppIcon 已编译进资源目录
 _CodeSignature                       不存在（未签名，装之前必须重签）
-```n
+```
+
 两个踩过的坑，写在这里省一次排查：
 
 | 现象 | 原因 | 处理 |

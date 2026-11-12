@@ -36,3 +36,4 @@ __pycache__/
 Thumbs.db
 tools/tailscale-setup-amd64.msi
 tools/tailscale*.exe
+tailnet-address.txt

@@ -92,8 +92,188 @@
     lastTouch = now;
   }, { passive: false });
 
-  // ---------------------------------------------------------------- 布局探针
+  // ---------------------------------------------------------------- 会话删除兜底
+  //
+  // dsh-session-delete-cascade 的流程是：
+  //   POST /session-delete-cascade/plan  →  window.confirm(...)  →  POST /delete
+  // WKWebView 里原生 confirm 若不可用会同步返回 false，插件立刻 return，
+  // 表现就是「点了没反应」。这里在页面层直接接管这个按钮：
+  // 自己弹确认框、自己调 plan/delete，完全不依赖 App 的原生弹窗能力。
+  //
+  // mobile.js 由代理注入，改完刷新页面即可生效，不需要重装 App。
 
+  const CASCADE_ATTR = 'data-dsh-cascade-delete';
+  const CASCADE_BASE = '/session-delete-cascade';
+
+  async function cascadePost(path, body) {
+    const response = await fetch(new URL(CASCADE_BASE + path, window.location.origin).toString(), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body || {}),
+      credentials: 'same-origin',
+    });
+    let payload = null;
+    try {
+      payload = await response.json();
+    } catch {
+      payload = null;
+    }
+    if (!response.ok) {
+      throw new Error((payload && payload.message) || ('HTTP ' + response.status));
+    }
+    return payload;
+  }
+
+  /** 页面内自绘确认框。返回 Promise<boolean>，不依赖 window.confirm。 */
+  function dshmAsk(title, message, okLabel) {
+    return new Promise((resolve) => {
+      const overlay = document.createElement('div');
+      overlay.setAttribute('data-dshm-modal', '1');
+      overlay.style.cssText = [
+        'position:fixed', 'inset:0', 'z-index:2147483000',
+        'background:rgba(0,0,0,.55)', 'display:flex',
+        'align-items:center', 'justify-content:center',
+        'padding:24px', '-webkit-backdrop-filter:blur(2px)', 'backdrop-filter:blur(2px)',
+      ].join(';');
+
+      const card = document.createElement('div');
+      card.style.cssText = [
+        'max-width:360px', 'width:100%', 'border-radius:16px',
+        'background:#1d1d21', 'color:#e8e8ea', 'padding:20px',
+        'box-shadow:0 12px 40px rgba(0,0,0,.5)',
+        'font:15px/1.5 -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif',
+      ].join(';');
+
+      const heading = document.createElement('div');
+      heading.textContent = title;
+      heading.style.cssText = 'font-size:17px;font-weight:600;margin-bottom:10px';
+
+      const body = document.createElement('div');
+      body.textContent = message;
+      body.style.cssText = 'white-space:pre-wrap;color:#a8a8b0;font-size:14px;max-height:45vh;overflow:auto';
+
+      const row = document.createElement('div');
+      row.style.cssText = 'display:flex;gap:10px;justify-content:flex-end;margin-top:18px';
+
+      const cancel = document.createElement('button');
+      cancel.type = 'button';
+      cancel.textContent = '取消';
+      cancel.style.cssText = 'padding:10px 18px;border-radius:10px;border:1px solid #3a3a42;background:transparent;color:#c8c8d0;font-size:15px';
+
+      const ok = document.createElement('button');
+      ok.type = 'button';
+      ok.textContent = okLabel || '确定';
+      ok.style.cssText = 'padding:10px 18px;border-radius:10px;border:none;background:#d94a4a;color:#fff;font-size:15px;font-weight:600';
+
+      const done = (value) => {
+        overlay.remove();
+        resolve(value);
+      };
+      cancel.addEventListener('click', (e) => { e.stopPropagation(); done(false); });
+      ok.addEventListener('click', (e) => { e.stopPropagation(); done(true); });
+      overlay.addEventListener('click', (e) => { if (e.target === overlay) done(false); });
+
+      row.appendChild(cancel);
+      row.appendChild(ok);
+      card.appendChild(heading);
+      card.appendChild(body);
+      card.appendChild(row);
+      overlay.appendChild(card);
+      document.body.appendChild(overlay);
+    });
+  }
+
+  function dshmToast(text) {
+    const el = document.createElement('div');
+    el.setAttribute('data-dshm-toast', '1');
+    el.textContent = text;
+    el.style.cssText = [
+      'position:fixed', 'left:50%', 'bottom:calc(24px + env(safe-area-inset-bottom,0px))',
+      'transform:translateX(-50%)', 'z-index:2147483001',
+      'max-width:86vw', 'padding:12px 18px', 'border-radius:12px',
+      'background:rgba(30,30,34,.96)', 'color:#e8e8ea',
+      'font:14px/1.45 -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif',
+      'white-space:pre-wrap', 'box-shadow:0 8px 30px rgba(0,0,0,.45)',
+    ].join(';');
+    document.body.appendChild(el);
+    setTimeout(() => el.remove(), 5200);
+  }
+
+  let cascadeBusy = false;
+
+  async function handleCascadeClick(button) {
+    if (cascadeBusy) return;
+    cascadeBusy = true;
+    const sessionId = button.getAttribute(CASCADE_ATTR);
+    try {
+      const plan = await cascadePost('/plan', { sessionId });
+      const nodes = (plan && plan.nodes) || [];
+      const children = Math.max(0, nodes.length - 1);
+      const live = nodes.filter((node) => node.live === true).length;
+      const label = (plan && plan.root && plan.root.title) || sessionId;
+
+      const scope = children > 0
+        ? '这会一并删除它的 ' + children + ' 个子会话（共 ' + nodes.length + ' 个），并清除磁盘日志、投影缓存与工作区记录，不可恢复。'
+        : '这会清除该会话的磁盘日志、投影缓存与工作区记录，不可恢复。';
+      const liveNote = live > 0
+        ? '\n\n其中 ' + live + ' 个正在运行：确认后会先停止它们的回合，再执行删除。'
+        : '';
+
+      const ok = await dshmAsk(
+        '删除会话「' + label + '」？',
+        scope + liveNote + '\n\n继续？',
+        '删除',
+      );
+      if (!ok) return;
+
+      const report = await cascadePost('/delete', {
+        sessionId,
+        dryRun: false,
+        includeLive: true,
+        allowSelf: true,
+        protectSessionId: null,
+      });
+
+      const removed = (report && report.removed) || [];
+      const skipped = (report && report.skipped) || [];
+      const failed = ((report && report.nodes) || []).filter((node) => (node.errors || []).length > 0);
+
+      if (removed.length > 0) {
+        const nested = Math.max(0, removed.length - 1);
+        const tail = nested > 0 ? '，连同 ' + nested + ' 个子会话' : '';
+        const warn = failed.length > 0
+          ? '\n' + failed.length + ' 个未能完全清理：' + failed.map((node) => node.id).join(', ')
+          : '';
+        dshmToast('已删除「' + label + '」' + tail + warn + '\n若它是当前会话，刷新页面后消失');
+        return;
+      }
+
+      const reasons = skipped.length > 0
+        ? skipped.map((item) => item.id + ' — ' + item.reason).join('\n')
+        : failed.length > 0
+          ? failed.map((node) => node.id + ' — ' + (node.errors || []).join('; ')).join('\n')
+          : 'host 未报告任何可删除的产物';
+      dshmToast('没有删除任何会话：\n' + reasons);
+    } catch (error) {
+      dshmToast('删除失败：' + ((error && error.message) || String(error)));
+    } finally {
+      cascadeBusy = false;
+    }
+  }
+
+  // 捕获阶段先于 React 的委托处理，拦下插件的 confirm 路径
+  document.addEventListener('click', (event) => {
+    const node = event.target;
+    if (!node || !node.closest) return;
+    const button = node.closest('[' + CASCADE_ATTR + ']');
+    if (!button) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.stopImmediatePropagation();
+    void handleCascadeClick(button);
+  }, true);
+
+  // ---------------------------------------------------------------- 布局探针
   const describe = (el) => {
     const cls = typeof el.className === 'string' ? el.className.trim().split(/\s+/).slice(0, 3).join('.') : '';
     const id = el.id ? `#${el.id}` : '';

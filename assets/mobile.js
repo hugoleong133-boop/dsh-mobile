@@ -56,18 +56,49 @@
   // ---------------------------------------------------------------- 布局探针
 
   const describe = (el) => {
-    const cls = typeof el.className === 'string' ? el.className.trim().split(/\s+/).slice(0, 4).join('.') : '';
+    const cls = typeof el.className === 'string' ? el.className.trim().split(/\s+/).slice(0, 3).join('.') : '';
     const id = el.id ? `#${el.id}` : '';
-    const text = (el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 48);
     return `${el.tagName.toLowerCase()}${id}${cls ? '.' + cls : ''}`;
+  };
+
+  /** 祖上有 overflow:hidden/auto/scroll 的，说明这块内容是被设计成裁剪的，不算溢出。 */
+  const clippedByAncestor = (el) => {
+    let p = el.parentElement;
+    while (p && p !== document.body) {
+      const s = getComputedStyle(p);
+      if (s.overflowX === 'hidden' || s.overflowX === 'auto' || s.overflowX === 'scroll') return true;
+      p = p.parentElement;
+    }
+    return false;
+  };
+
+  /** 只带结构，不带正文，避免把对话内容回传。 */
+  const chainOf = (el, depth = 4) => {
+    const out = [];
+    let p = el.parentElement;
+    for (let i = 0; i < depth && p && p !== document.documentElement; i += 1) {
+      const s = getComputedStyle(p);
+      const r = p.getBoundingClientRect();
+      out.push({
+        el: describe(p),
+        rectW: Math.round(r.width),
+        display: s.display,
+        flexWrap: s.flexWrap,
+        flexShrink: s.flexShrink,
+        overflowX: s.overflowX,
+        gap: s.gap,
+      });
+      p = p.parentElement;
+    }
+    return out;
   };
 
   const scanOverflow = () => {
     const vw = window.innerWidth;
     const found = [];
+    const clipped = [];
     const nodes = document.querySelectorAll('body *');
     for (const el of nodes) {
-      if (el.closest('[data-dshm-skip-scan]')) continue;
       const r = el.getBoundingClientRect();
       if (r.width < 1 || r.height < 1) continue;
       const overRight = r.right - vw;
@@ -76,7 +107,8 @@
       if (worst <= 1) continue;
       const style = getComputedStyle(el);
       if (style.visibility === 'hidden' || style.display === 'none' || style.opacity === '0') continue;
-      found.push({
+
+      const entry = {
         el: describe(el),
         over: Math.round(worst),
         dir: overRight >= overLeft ? 'right' : 'left',
@@ -86,16 +118,30 @@
         width: style.width,
         flexShrink: style.flexShrink,
         whiteSpace: style.whiteSpace,
-        text: (el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 60),
-      });
+      };
+
+      // 左侧越界且整块在屏幕外 = 侧栏收起的正常表现，不算问题
+      if (overRight <= 0) {
+        clipped.push({ ...entry, why: 'offscreen-left' });
+        continue;
+      }
+      if (clippedByAncestor(el)) {
+        clipped.push({ ...entry, why: 'ancestor-clips' });
+        continue;
+      }
+      entry.chain = chainOf(el);
+      found.push(entry);
     }
     found.sort((a, b) => b.over - a.over);
+    clipped.sort((a, b) => b.over - a.over);
     return {
       viewport: { w: vw, h: window.innerHeight, dpr: window.devicePixelRatio },
       mode: inWebView ? 'webview' : (standalone ? 'standalone' : 'safari'),
       scanned: nodes.length,
       overflowing: found.length,
-      worst: found.slice(0, 25),
+      suppressed: clipped.length,
+      worst: found.slice(0, 12),
+      suppressedSample: clipped.slice(0, 8),
     };
   };
 

@@ -273,6 +273,41 @@
     void handleCascadeClick(button);
   }, true);
 
+  // ---------------------------------------------------------------- 音频解锁
+  //
+  // iOS 上 AudioContext 初始是 suspended，必须有用户手势才能跑起来。
+  // TTS 插件在「回复结束」时自动播放，那一刻没有手势 → 声音被丢弃。
+  // 这里 hook 构造函数，把所有实例记下来，在任何触摸/点击时统一 resume。
+
+  (() => {
+    const Native = window.AudioContext || window.webkitAudioContext;
+    if (!Native) return;
+
+    const live = [];
+    const wrap = function (...args) {
+      const ctx = new Native(...args);
+      live.push(ctx);
+      if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+      return ctx;
+    };
+    wrap.prototype = Native.prototype;
+    try {
+      window.AudioContext = wrap;
+      window.webkitAudioContext = wrap;
+    } catch { /* 只读就保持原样 */ }
+
+    const unlock = () => {
+      for (const ctx of live) {
+        if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+      }
+    };
+    for (const ev of ['touchstart', 'touchend', 'pointerdown', 'click', 'keydown']) {
+      document.addEventListener(ev, unlock, { passive: true, capture: true });
+    }
+    // 长时间停在前台时也补一次，防止被后台打断后不再恢复
+    setInterval(unlock, 2500);
+  })();
+
   // ---------------------------------------------------------------- 布局探针
   const describe = (el) => {
     const cls = typeof el.className === 'string' ? el.className.trim().split(/\s+/).slice(0, 3).join('.') : '';
@@ -432,6 +467,47 @@
       webviewFlag: root.dataset.dshmWebview || 'none',
     };
   };
+
+  /// 媒体能力快照：语音输入要求安全上下文，这里把判断依据一并上报，
+  /// 免得每次靠猜「到底是 http 还是权限没给」。
+  const capabilitySnapshot = () => {
+    const ctx = window.AudioContext || window.webkitAudioContext;
+    let ctxState = 'none';
+    try {
+      if (ctx) {
+        const probe = new ctx();
+        ctxState = probe.state;
+        probe.close && probe.close();
+      }
+    } catch { ctxState = 'error'; }
+
+    return {
+      type: 'caps',
+      secureContext: window.isSecureContext === true,
+      protocol: location.protocol,
+      host: location.host,
+      hasMediaDevices: !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia),
+      hasAudioContext: !!ctx,
+      audioContextState: ctxState,
+      hasSpeechSynthesis: !!window.speechSynthesis,
+      hasMediaRecorder: typeof MediaRecorder !== 'undefined',
+      mode: inWebView ? 'webview' : (standalone ? 'standalone' : 'safari'),
+    };
+  };
+
+  const reportCapabilities = () => {
+    try {
+      fetch('/__m/diag', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(capabilitySnapshot()),
+        credentials: 'same-origin',
+      }).catch(() => {});
+    } catch { /* 上报失败不影响页面 */ }
+  };
+
+  // 每次加载都报一次，成本很低，能直接看出当前通道有没有麦克风权限
+  setTimeout(reportCapabilities, 1500);
 
   const report = () => {
     try {

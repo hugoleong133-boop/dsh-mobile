@@ -1,5 +1,20 @@
 import SwiftUI
 
+/// 应用入口。DSH Mobile 只是个 WKWebView 壳：
+/// 真正的 agent 跑在电脑上，这里负责选通道、记住地址、显示延迟。
+@main
+struct DSHMobileApp: App {
+    @StateObject private var store = EndpointStore()
+
+    var body: some Scene {
+        WindowGroup {
+            RootView()
+                .environmentObject(store)
+                .preferredColorScheme(nil)
+        }
+    }
+}
+
 /// 三条接入通道。各自存一个地址，互不影响。
 enum DSHChannel: String, CaseIterable, Identifiable {
     case lan

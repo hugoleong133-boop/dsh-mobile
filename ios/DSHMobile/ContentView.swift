@@ -608,7 +608,7 @@ struct SessionView: View {
                 Button("切换到 \(alternates[1].title)") { switchTo(alternates[1]) }
             }
 
-            Button("切换") { store.disconnect() }
+            Button("切换软件") { store.disconnect() }
             if let id = store.activeTargetId {
                 Button("通道设置") { channelSettingsTarget = id; showSettings = true }
             }

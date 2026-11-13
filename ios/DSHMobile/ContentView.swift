@@ -892,7 +892,7 @@ struct WebContainer: UIViewRepresentable {
                      requestMediaCapturePermissionFor origin: WKSecurityOrigin,
                      initiatedByFrame frame: WKFrameInfo,
                      type: WKMediaCaptureType,
-                     decisionHandler: @escaping (WKMediaCaptureDecision) -> Void) {
+                     decisionHandler: @escaping (WKPermissionDecision) -> Void) {
             let host = origin.host.lowercased()
             let samePage = !trustedHost.isEmpty && host == trustedHost
             switch type {
@@ -1042,6 +1042,7 @@ struct WebContainer: UIViewRepresentable {
         /// allowsMultipleSelection / allowsDirectories，MIME 列表在
         /// WKOpenPanelParametersPrivate.h，名字是 `_acceptedMIMETypes`。
         /// 运行时探一下再 KVC；读不到就返回空（等于退回文件选择器，不会崩）。
+        @available(iOS 18.4, *)
         private static func acceptedMIMETypes(_ parameters: WKOpenPanelParameters) -> [String] {
             let object = parameters as NSObject
             for key in ["acceptMIMETypes", "_acceptedMIMETypes"] {

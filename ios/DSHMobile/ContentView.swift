@@ -29,6 +29,8 @@ struct RootView: View {
 struct LatencyBadge: View {
     let latency: Int?
     var connected: Bool = false
+    /// 会话页把菜单并进这个胶囊，用一个小提示点表明可点
+    var showsMenuHint: Bool = false
 
     var body: some View {
         HStack(spacing: 6) {
@@ -36,6 +38,12 @@ struct LatencyBadge: View {
             Text(label)
                 .font(.system(size: 12, weight: .medium, design: .monospaced))
                 .foregroundStyle(.secondary)
+            if showsMenuHint {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary.opacity(0.65))
+                    .padding(.leading, 1)
+            }
         }
         .padding(.horizontal, 11)
         .padding(.vertical, 5)
@@ -144,19 +152,7 @@ struct HomeView: View {
             LatencyBadge(latency: nil, connected: false)
 
             HStack {
-                Button {
-                    showManager = true
-                } label: {
-                    Image(systemName: "plus")
-                        .font(.system(size: 17, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .frame(width: 34, height: 34)
-                        .background(Color.white.opacity(0.10), in: Circle())
-                }
-                .buttonStyle(.plain)
-
                 Spacer()
-
                 Button {
                     showManager = true
                 } label: {
@@ -587,23 +583,13 @@ struct SessionView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
 
-            ZStack {
-                LatencyBadge(latency: store.latency, connected: true)
-                HStack {
-                    Spacer()
-                    Button {
-                        showMenu = true
-                    } label: {
-                        Image(systemName: "ellipsis.circle.fill")
-                            .font(.system(size: 21))
-                            .symbolRenderingMode(.hierarchical)
-                            .foregroundStyle(.secondary)
-                            .padding(8)
-                    }
-                    .buttonStyle(.plain)
-                }
+            // 顶部：网络状态胶囊本身就是菜单入口，不再单独放按钮
+            Button {
+                showMenu = true
+            } label: {
+                LatencyBadge(latency: store.latency, connected: true, showsMenuHint: true)
             }
-            .padding(.horizontal, 12)
+            .buttonStyle(.plain)
             .padding(.top, 2)
         }
         .confirmationDialog("DSH Mobile", isPresented: $showMenu, titleVisibility: .visible) {
@@ -611,7 +597,7 @@ struct SessionView: View {
                 failure = nil
                 reloadToken += 1
             }
-            Button("切换通道") { store.disconnect() }
+            Button("切换") { store.disconnect() }
             if let id = store.activeTargetId {
                 Button("通道设置") { channelSettingsTarget = id; showSettings = true }
             }

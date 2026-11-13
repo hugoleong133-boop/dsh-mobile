@@ -6,8 +6,8 @@ import UniformTypeIdentifiers
 /// 装包后肉眼核对版本用：构建号 = git 提交短哈希
 enum AppInfo {
     static var versionLabel: String {
-        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
-        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
+        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?"
         return "v\(version) (\(build))"
     }
 }
@@ -16,118 +16,276 @@ struct RootView: View {
     @EnvironmentObject private var store: EndpointStore
 
     var body: some View {
-        if let endpoint = store.active {
-            SessionView(url: endpoint)
+        if store.activeURL != nil {
+            SessionView()
                 .ignoresSafeArea(.container, edges: .bottom)
         } else {
-            PairingView()
+            ChannelPickerView()
         }
     }
 }
 
-// MARK: - 配对
+// MARK: - 延迟胶囊
 
-struct PairingView: View {
+struct LatencyBadge: View {
+    let latency: Int?
+    var connected: Bool = true
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Circle()
+                .fill(dotColor)
+                .frame(width: 7, height: 7)
+            Text(label)
+                .font(.system(size: 12, weight: .medium, design: .monospaced))
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 11)
+        .padding(.vertical, 5)
+        .background(.ultraThinMaterial, in: Capsule())
+        .overlay(Capsule().stroke(Color.white.opacity(0.08), lineWidth: 0.5))
+    }
+
+    private var label: String {
+        if !connected { return "未连接" }
+        guard let latency else { return "连接中…" }
+        return "\(latency) ms"
+    }
+
+    private var dotColor: Color {
+        guard connected else { return .gray }
+        guard let latency else { return .yellow }
+        if latency < 80 { return .green }
+        if latency < 250 { return .yellow }
+        return .red
+    }
+}
+
+// MARK: - 通道选择
+
+struct ChannelPickerView: View {
     @EnvironmentObject private var store: EndpointStore
-    @State private var error: String?
-    @FocusState private var focused: Bool
+    @State private var showSettings = false
 
     var body: some View {
         ZStack {
             Color(red: 0.08, green: 0.08, blue: 0.09).ignoresSafeArea()
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .fill(LinearGradient(colors: [Color(red: 0.29, green: 0.42, blue: 1.0),
-                                                      Color(red: 0.54, green: 0.29, blue: 1.0)],
-                                             startPoint: .topLeading, endPoint: .bottomTrailing))
-                        .frame(width: 64, height: 64)
 
-                    Text("连接这台电脑").font(.system(size: 24, weight: .semibold))
-                    Text("把电脑上 start.ps1 / tunnel.ps1 打印的地址填进来。可以填多个（每行一个），App 会按顺序尝试，第一个连上的就用。")
-                        .font(.system(size: 14))
+            VStack(spacing: 0) {
+                LatencyBadge(latency: nil, connected: false)
+                    .padding(.top, 8)
+
+                Spacer(minLength: 0)
+
+                VStack(spacing: 12) {
+                    ForEach(DSHChannel.allCases) { channel in
+                        ChannelButton(channel: channel)
+                    }
+                }
+                .padding(.horizontal, 24)
+
+                Spacer(minLength: 0)
+
+                Button {
+                    showSettings = true
+                } label: {
+                    Text("设置")
+                        .font(.system(size: 15, weight: .medium))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 13)
+                        .background(Color.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 12))
                         .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .padding(.horizontal, 24)
+                .padding(.bottom, 10)
 
-                    TextEditor(text: $store.pairInput)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .keyboardType(.URL)
-                        .focused($focused)
-                        .font(.system(size: 15, design: .monospaced))
-                        .frame(minHeight: 110)
-                        .padding(10)
-                        .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 12))
-                        .overlay(alignment: .topLeading) {
-                            if store.pairInput.isEmpty {
-                                Text("192.168.1.124:8765/?k=123456\nhttps://xxx.ts.net/?k=123456")
-                                    .font(.system(size: 15, design: .monospaced))
-                                    .foregroundStyle(.secondary.opacity(0.6))
-                                    .padding(.horizontal, 15)
-                                    .padding(.vertical, 18)
-                                    .allowsHitTesting(false)
+                Text(AppInfo.versionLabel)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(.secondary.opacity(0.45))
+                    .padding(.bottom, 12)
+            }
+        }
+        .sheet(isPresented: $showSettings) {
+            ChannelSettingsView()
+                .environmentObject(store)
+        }
+    }
+}
+
+struct ChannelButton: View {
+    let channel: DSHChannel
+    @EnvironmentObject private var store: EndpointStore
+    @State private var showSettings = false
+
+    private var configured: Bool { store.isConfigured(channel) }
+
+    var body: some View {
+        Button {
+            if configured {
+                store.connect(channel)
+            } else {
+                showSettings = true
+            }
+        } label: {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(channel.title)
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(.white)
+                    Text(store.url(for: channel)?.absoluteString ?? "未设置")
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                Spacer(minLength: 8)
+                Image(systemName: configured ? "chevron.right" : "plus.circle")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(configured ? Color.secondary : Color(red: 0.29, green: 0.42, blue: 1.0))
+            }
+            .padding(.horizontal, 18)
+            .padding(.vertical, 15)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(configured ? Color.white.opacity(0.08) : Color.white.opacity(0.03))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(configured ? Color.clear : Color.white.opacity(0.08), lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+        .sheet(isPresented: $showSettings) {
+            ChannelSettingsView()
+                .environmentObject(store)
+        }
+    }
+}
+
+// MARK: - 设置
+
+struct ChannelSettingsView: View {
+    @EnvironmentObject private var store: EndpointStore
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var drafts: [DSHChannel: String] = [:]
+    @State private var error: String?
+
+    var body: some View {
+        NavigationView {
+            ZStack {
+                Color(red: 0.08, green: 0.08, blue: 0.09).ignoresSafeArea()
+
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 20) {
+                        ForEach(DSHChannel.allCases) { channel in
+                            VStack(alignment: .leading, spacing: 7) {
+                                HStack {
+                                    Text(channel.title)
+                                        .font(.system(size: 14, weight: .semibold))
+                                        .foregroundStyle(.white)
+                                    Spacer()
+                                    if !(drafts[channel] ?? "").isEmpty {
+                                        Button("清除") {
+                                            drafts[channel] = ""
+                                        }
+                                        .font(.system(size: 12))
+                                        .foregroundStyle(.secondary)
+                                    }
+                                }
+
+                                TextField(channel.placeholder, text: binding(for: channel))
+                                    .textInputAutocapitalization(.never)
+                                    .autocorrectionDisabled()
+                                    .keyboardType(.URL)
+                                    .font(.system(size: 13, design: .monospaced))
+                                    .padding(12)
+                                    .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 10))
+
+                                Text(channel.caption)
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(.secondary)
                             }
                         }
 
-                    Button {
-                        do {
-                            try store.pair(from: store.pairInput)
-                            error = nil
-                        } catch {
-                            self.error = error.localizedDescription
+                        if let error {
+                            Text(error)
+                                .font(.system(size: 12))
+                                .foregroundStyle(.red)
                         }
-                    } label: {
-                        Text("连接").font(.system(size: 17, weight: .semibold))
-                            .frame(maxWidth: .infinity).padding(.vertical, 14)
-                            .background(Color(red: 0.29, green: 0.42, blue: 1.0), in: RoundedRectangle(cornerRadius: 12))
-                            .foregroundStyle(.white)
                     }
-                    .buttonStyle(.plain)
-
-                    if let error {
-                        Text(error).font(.system(size: 13)).foregroundStyle(.red)
-                    }
-
-                    Text("建议顺序：局域网 → tailnet → Funnel。排在前面的越快。")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-
-                    Text("DSH Mobile " + AppInfo.versionLabel)
-                        .font(.system(size: 12, design: .monospaced))
-                        .foregroundStyle(.secondary.opacity(0.55))
-                        .frame(maxWidth: .infinity, alignment: .center)
+                    .padding(20)
                 }
-                .padding(24)
-                .foregroundStyle(.white)
+            }
+            .navigationTitle("通道地址")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("保存") { save() }
+                        .font(.system(size: 16, weight: .semibold))
+                }
             }
         }
-        .onAppear { focused = true }
+        .onAppear(perform: loadDrafts)
+    }
+
+    private func binding(for channel: DSHChannel) -> Binding<String> {
+        Binding(
+            get: { drafts[channel] ?? "" },
+            set: { drafts[channel] = $0; error = nil }
+        )
+    }
+
+    private func loadDrafts() {
+        var loaded: [DSHChannel: String] = [:]
+        for channel in DSHChannel.allCases {
+            loaded[channel] = store.url(for: channel)?.absoluteString ?? ""
+        }
+        drafts = loaded
+    }
+
+    private func save() {
+        do {
+            for channel in DSHChannel.allCases {
+                try store.save(drafts[channel] ?? "", for: channel)
+            }
+            error = nil
+            dismiss()
+        } catch {
+            self.error = error.localizedDescription
+        }
     }
 }
 
 // MARK: - 会话
 
 struct SessionView: View {
-    let url: URL
     @EnvironmentObject private var store: EndpointStore
+    @State private var showMenu = false
     @State private var showSettings = false
     @State private var reloadToken = 0
     @State private var failure: String?
 
-    var body: some View {
-        ZStack(alignment: .topTrailing) {
-            WebContainer(
-                url: url,
-                reloadToken: reloadToken,
-                failure: $failure,
-                onFailure: {
-                    failure = nil
-                    return store.advance()
-                },
-                onSuccess: { store.markGood() }
-            )
-            .ignoresSafeArea(edges: .bottom)
+    private var url: URL? { store.activeURL }
 
-            if let failure {
+    var body: some View {
+        ZStack(alignment: .top) {
+            if let url {
+                WebContainer(
+                    url: url,
+                    reloadToken: reloadToken,
+                    failure: $failure,
+                    onLatency: { store.latency = $0 }
+                )
+                .ignoresSafeArea(edges: .bottom)
+            }
+
+            if let failure, let url {
                 FailurePanel(
                     url: url,
                     message: failure,
@@ -135,49 +293,48 @@ struct SessionView: View {
                         self.failure = nil
                         reloadToken += 1
                     },
-                    onRestart: {
-                        self.failure = nil
-                        store.restart()
-                        reloadToken += 1
-                    },
-                    onRepair: { store.forget() }
+                    onSwitch: { store.disconnect() }
                 )
                 .padding(.horizontal, 20)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
 
-            Button {
-                showSettings = true
-            } label: {
-                Image(systemName: "ellipsis.circle.fill")
-                    .font(.system(size: 22))
-                    .symbolRenderingMode(.hierarchical)
-                    .foregroundStyle(.secondary)
-                    .padding(10)
+            // 顶部：中间延迟 / 右侧菜单
+            ZStack {
+                LatencyBadge(latency: store.latency, connected: true)
+                HStack {
+                    Spacer()
+                    Button {
+                        showMenu = true
+                    } label: {
+                        Image(systemName: "ellipsis.circle.fill")
+                            .font(.system(size: 21))
+                            .symbolRenderingMode(.hierarchical)
+                            .foregroundStyle(.secondary)
+                            .padding(8)
+                    }
+                    .buttonStyle(.plain)
+                }
             }
-            .buttonStyle(.plain)
+            .padding(.horizontal, 12)
+            .padding(.top, 2)
         }
-        .confirmationDialog("DSH Mobile", isPresented: $showSettings, titleVisibility: .visible) {
+        .confirmationDialog("DSH Mobile", isPresented: $showMenu, titleVisibility: .visible) {
             Button("重新加载") {
                 failure = nil
                 reloadToken += 1
             }
-            Button("尝试下一个地址") {
-                failure = nil
-                if store.advance() { reloadToken += 1 }
-            }
-            Button("重新配对", role: .destructive) { store.forget() }
-            Button("在 Safari 打开") { UIApplication.shared.open(url) }
+            Button("切换通道") { store.disconnect() }
+            Button("通道设置") { showSettings = true }
+            if let url { Button("在 Safari 打开") { UIApplication.shared.open(url) } }
             Button("取消", role: .cancel) {}
         } message: {
-            Text(AppInfo.versionLabel + "\n\n" + addressSummary)
+            Text((store.active?.title ?? "") + " · " + AppInfo.versionLabel)
         }
-    }
-
-    private var addressSummary: String {
-        store.endpoints.enumerated().map { index, item in
-            (index == store.activeIndex ? "▶ " : "   ") + item.absoluteString
-        }.joined(separator: "\n")
+        .sheet(isPresented: $showSettings) {
+            ChannelSettingsView()
+                .environmentObject(store)
+        }
     }
 }
 
@@ -185,35 +342,25 @@ struct FailurePanel: View {
     let url: URL
     let message: String
     let onRetry: () -> Void
-    let onRestart: () -> Void
-    let onRepair: () -> Void
+    let onSwitch: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 8) {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.orange)
+                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
                 Text("打不开这个地址").font(.system(size: 17, weight: .semibold))
             }
-            Text(message)
-                .font(.system(size: 13))
-                .foregroundStyle(.secondary)
+            Text(message).font(.system(size: 13)).foregroundStyle(.secondary)
             Text(url.absoluteString)
                 .font(.system(size: 12, design: .monospaced))
                 .foregroundStyle(.secondary)
                 .textSelection(.enabled)
-
             HStack(spacing: 10) {
                 Button("重试", action: onRetry).buttonStyle(.borderedProminent)
-                Button("全部重试", action: onRestart).buttonStyle(.bordered)
+                Button("切换通道", action: onSwitch).buttonStyle(.bordered)
                 Button("在 Safari 打开") { UIApplication.shared.open(url) }.buttonStyle(.bordered)
-                Button("重新配对", action: onRepair).buttonStyle(.bordered)
             }
             .font(.system(size: 14))
-
-            Text("所有候选地址都试过了才显示这个面板。")
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
         }
         .padding(18)
         .frame(maxWidth: 440)
@@ -224,19 +371,29 @@ struct FailurePanel: View {
 // MARK: - WebView 壳
 
 /// WKWebView 默认不工作、但 DSH 前端实际用到的东西，这里逐个补上：
-///   1. `<input type="file">`        → runOpenPanelWith，否则点附件按钮毫无反应
-///   2. `alert/confirm/prompt`       → 插件删除会话靠 confirm 二次确认
-///   3. `navigator.clipboard`        → http 下不是安全上下文，注入 execCommand 兜底
-///   4. blob: + `<a download>`       → WKWebView 不会下载，桥接到系统分享面板
-///   5. `window.open` / target=_blank → 同窗口打开
+///   文件选择器 / alert-confirm-prompt / 剪贴板兜底 / blob 下载 / window.open
+/// 另外定期在页面内 fetch /__m/status 测 RTT，回传给原生显示在顶部。
 struct WebContainer: UIViewRepresentable {
     let url: URL
     let reloadToken: Int
     @Binding var failure: String?
-    let onFailure: () -> Bool
-    let onSuccess: () -> Void
+    let onLatency: (Int?) -> Void
 
-    /// 注入到页面最前面的补丁脚本
+    static let pingJS = #"""
+    (function () {
+      if (!window.webkit || !window.webkit.messageHandlers || !window.webkit.messageHandlers.dshmPing) return;
+      var t0 = performance.now();
+      fetch('/__m/status?_=' + Date.now(), { cache: 'no-store', credentials: 'same-origin' })
+        .then(function (r) {
+          var ms = Math.round(performance.now() - t0);
+          window.webkit.messageHandlers.dshmPing.postMessage(r.ok ? ms : -1);
+        })
+        .catch(function () {
+          window.webkit.messageHandlers.dshmPing.postMessage(-1);
+        });
+    })();
+    """#
+
     static let bootstrapJS = #"""
     (function () {
       if (window.__dshmBridgeInstalled) return;
@@ -260,8 +417,7 @@ struct WebContainer: UIViewRepresentable {
         });
       }
 
-      var needsPolyfill = !window.isSecureContext || !navigator.clipboard || !navigator.clipboard.writeText;
-      if (needsPolyfill) {
+      if (!window.isSecureContext || !navigator.clipboard || !navigator.clipboard.writeText) {
         try {
           Object.defineProperty(navigator, 'clipboard', {
             configurable: true,
@@ -278,10 +434,10 @@ struct WebContainer: UIViewRepresentable {
               }
             }
           });
-        } catch (e) { /* 定义失败就保持原样 */ }
+        } catch (e) { /* 保持原样 */ }
       }
 
-      // ---- blob 下载桥接：把 url 存下来，点击 <a download> 时读出内容发给原生 ----
+      // ---- blob 下载桥接 ----
       var objectUrls = {};
       var nativeCreate = URL.createObjectURL.bind(URL);
       URL.createObjectURL = function (obj) {
@@ -343,6 +499,7 @@ struct WebContainer: UIViewRepresentable {
 
         let controller = config.userContentController
         controller.add(context.coordinator, name: "dshmSave")
+        controller.add(context.coordinator, name: "dshmPing")
         controller.addUserScript(WKUserScript(
             source: Self.bootstrapJS,
             injectionTime: .atDocumentStart,
@@ -366,13 +523,16 @@ struct WebContainer: UIViewRepresentable {
     }
 
     static func dismantleUIView(_ view: WKWebView, coordinator: Coordinator) {
+        coordinator.stopPinging()
         view.configuration.userContentController.removeScriptMessageHandler(forName: "dshmSave")
+        view.configuration.userContentController.removeScriptMessageHandler(forName: "dshmPing")
     }
 
     final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler, UIDocumentPickerDelegate {
         private let parent: WebContainer
         private var loadedKey = ""
         private var openPanelCompletion: (([URL]?) -> Void)?
+        private var pingTimer: Timer?
 
         init(_ parent: WebContainer) {
             self.parent = parent
@@ -386,9 +546,33 @@ struct WebContainer: UIViewRepresentable {
             view.load(request)
         }
 
+        // MARK: 延迟探测
+
+        func startPinging(_ webView: WKWebView) {
+            stopPinging()
+            ping(webView)
+            let timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self, weak webView] _ in
+                guard let self, let webView else { return }
+                self.ping(webView)
+            }
+            timer.tolerance = 1
+            pingTimer = timer
+        }
+
+        func stopPinging() {
+            pingTimer?.invalidate()
+            pingTimer = nil
+        }
+
+        private func ping(_ webView: WKWebView) {
+            webView.evaluateJavaScript(WebContainer.pingJS, completionHandler: nil)
+        }
+
+        // MARK: 导航
+
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             parent.failure = nil
-            parent.onSuccess()
+            startPinging(webView)
         }
 
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
@@ -404,16 +588,15 @@ struct WebContainer: UIViewRepresentable {
         private func report(_ error: Error) {
             let ns = error as NSError
             if ns.domain == NSURLErrorDomain && ns.code == NSURLErrorCancelled { return }
-            if parent.onFailure() { return }
+            stopPinging()
+            parent.onLatency(nil)
 
             var text = "\(ns.localizedDescription)（\(ns.domain) \(ns.code)）"
             if ns.code == -1022 || ns.code == -1004 || ns.code == -1009 || ns.code == -1001 {
-                text += "\n\n无法建立连接。检查电脑上 8765 是否在跑（/__m/status），以及这个网络能不能到那个地址。"
+                text += "\n\n检查电脑上 8765 是否在跑，以及这个网络能不能到该地址。"
             }
             parent.failure = text
         }
-
-        // MARK: 导航策略
 
         func webView(_ webView: WKWebView,
                      decidePolicyFor navigationAction: WKNavigationAction,
@@ -436,7 +619,6 @@ struct WebContainer: UIViewRepresentable {
             decisionHandler(.cancel)
         }
 
-        /// window.open / target=_blank：没有这个回调时点了什么都不发生
         func webView(_ webView: WKWebView,
                      createWebViewWith configuration: WKWebViewConfiguration,
                      for navigationAction: WKNavigationAction,
@@ -448,24 +630,13 @@ struct WebContainer: UIViewRepresentable {
         }
 
         // MARK: 文件选择器
-        //
-        // `<input type="file">` 在 WKWebView 里不会自己弹面板，必须实现这个回调。
-        // DSH 的附件上传就是靠它，缺了这一层，点附件按钮毫无反应。
 
-        /// `<input type="file">` 在 WKWebView 里不会自己弹面板，必须实现这个回调。
-        /// DSH 的附件上传就是靠它，缺了这一层，点附件按钮毫无反应。
-        ///
-        /// 注意：`WKOpenPanelParameters` 在当前 SDK 里标了 iOS 18.4+，
-        /// 所以这里加可用性标注；低于 18.4 的系统上文件选择仍然不可用。
         @available(iOS 18.4, *)
         func webView(_ webView: WKWebView,
                      runOpenPanelWith parameters: WKOpenPanelParameters,
                      initiatedByFrame frame: WKFrameInfo,
                      completionHandler: @escaping ([URL]?) -> Void) {
             openPanelCompletion = completionHandler
-
-            // WKOpenPanelParameters 只有 allowsMultipleSelection / allowsDirectories，
-            // 拿不到 accept 列表，所以给一组通用类型，用户也能选"所有文件"。
             let picker = UIDocumentPickerViewController(
                 forOpeningContentTypes: [.item, .image, .movie, .audio, .text, .pdf, .data],
                 asCopy: true
@@ -485,10 +656,16 @@ struct WebContainer: UIViewRepresentable {
             openPanelCompletion = nil
         }
 
-        // MARK: blob 下载 → 系统分享
+        // MARK: 消息桥
 
         func userContentController(_ userContentController: WKUserContentController,
                                    didReceive message: WKScriptMessage) {
+            if message.name == "dshmPing" {
+                let value = (message.body as? NSNumber)?.intValue ?? -1
+                parent.onLatency(value >= 0 ? value : nil)
+                return
+            }
+
             guard message.name == "dshmSave",
                   let body = message.body as? [String: Any],
                   let data = body["data"] as? String else { return }
@@ -496,7 +673,6 @@ struct WebContainer: UIViewRepresentable {
             let rawName = (body["name"] as? String) ?? "download"
             let name = rawName.contains(".") ? rawName : rawName + ".bin"
             let temp = FileManager.default.temporaryDirectory.appendingPathComponent(name)
-
             guard let bytes = Data(base64Encoded: data, options: .ignoreUnknownCharacters) else { return }
             try? bytes.write(to: temp)
 
@@ -521,8 +697,6 @@ struct WebContainer: UIViewRepresentable {
             return controller
         }
 
-        /// present 失败时的兜底路径全都在这里；
-        /// 优先用承载页面本身的窗口，比全局查找更不容易扑空。
         private func present(_ alert: UIAlertController,
                              from webView: WKWebView?,
                              fallback: @escaping () -> Void) {

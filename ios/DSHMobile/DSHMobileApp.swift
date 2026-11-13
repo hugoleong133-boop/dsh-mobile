@@ -1,117 +1,143 @@
 import SwiftUI
 
-/// DSH Mobile —— 把桌面 DSH 的 Web 会话包进一个原生壳。
-///
-/// 它不实现任何业务逻辑：真正的 agent 跑在电脑上，这个 App 只是
-/// WKWebView + 一个记住配对地址的壳。
-///
-/// 支持**多个地址按顺序自动选路**：同一个会话可以同时有局域网、tailnet、
-/// Funnel 三个入口，在家走局域网最快，出门自动切到公网入口。
-@main
-struct DSHMobileApp: App {
-    @StateObject private var store = EndpointStore()
+/// 三条接入通道。各自存一个地址，互不影响。
+enum DSHChannel: String, CaseIterable, Identifiable {
+    case lan
+    case funnel
+    case tailnet
 
-    var body: some Scene {
-        WindowGroup {
-            RootView()
-                .environmentObject(store)
-                .preferredColorScheme(nil)
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .lan: return "局域网"
+        case .funnel: return "Funnel"
+        case .tailnet: return "tailnet"
+        }
+    }
+
+    var caption: String {
+        switch self {
+        case .lan: return "同一 WiFi 下最快"
+        case .funnel: return "公网 HTTPS，不需要 Tailscale"
+        case .tailnet: return "需要 Tailscale 在线"
+        }
+    }
+
+    var placeholder: String {
+        switch self {
+        case .lan: return "192.168.1.124:8765/?k=338599"
+        case .funnel: return "https://xxx.ts.net/?k=338599"
+        case .tailnet: return "http://xxx.ts.net:8765/?k=338599"
         }
     }
 }
 
-/// 配对信息持久化。地址是一组，会记住上次成功的那个。
+/// 通道地址持久化 + 当前连接状态。
+/// 地址存进 UserDefaults，保存后即「锁定」，下次启动直接可用，不需要重新输入。
 final class EndpointStore: ObservableObject {
-    @Published var endpoints: [URL] = []
-    @Published var activeIndex: Int = 0
-    @Published var pairInput: String = ""
+    @Published private(set) var endpoints: [DSHChannel: URL] = [:]
+    @Published private(set) var active: DSHChannel?
+    @Published var latency: Int?
 
-    private static let listKey = "dshm.endpoints"
-    private static let goodKey = "dshm.lastGoodIndex"
-    private static let legacyKey = "dshm.endpoint"
+    private static let keyPrefix = "dshm.ch.channel."
+    private static let legacyKey = "dshm.endpoints"
 
     init() {
-        if let raw = UserDefaults.standard.string(forKey: Self.listKey),
-           let urls = Self.parseList(raw), !urls.isEmpty {
-            endpoints = urls
-        } else if let legacy = UserDefaults.standard.string(forKey: Self.legacyKey),
-                  let url = URL(string: legacy) {
-            // 从只支持单地址的旧版迁移
-            endpoints = [url]
-            UserDefaults.standard.set(legacy, forKey: Self.listKey)
-            UserDefaults.standard.removeObject(forKey: Self.legacyKey)
-        }
-
-        let good = UserDefaults.standard.integer(forKey: Self.goodKey)
-        if endpoints.indices.contains(good) {
-            activeIndex = good
-        }
+        load()
     }
 
-    var active: URL? {
-        endpoints.indices.contains(activeIndex) ? endpoints[activeIndex] : nil
+    var activeURL: URL? {
+        guard let active else { return nil }
+        return endpoints[active]
     }
 
-    var hasFallback: Bool {
-        activeIndex + 1 < endpoints.count
+    func url(for channel: DSHChannel) -> URL? {
+        endpoints[channel]
     }
 
-    /// 按换行、逗号或空格分隔；缺协议头时补 http://
-    static func parseList(_ raw: String) -> [URL]? {
-        let parts = raw.split(whereSeparator: { $0 == "," || $0 == "\n" || $0 == " " || $0 == "\r" })
-        var urls: [URL] = []
-        for part in parts {
-            var text = String(part).trimmingCharacters(in: .whitespaces)
-            if text.isEmpty { continue }
-            let lower = text.lowercased()
-            if !lower.hasPrefix("http://") && !lower.hasPrefix("https://") {
-                text = "http://" + text
+    func isConfigured(_ channel: DSHChannel) -> Bool {
+        endpoints[channel] != nil
+    }
+
+    // MARK: 存取
+
+    private func load() {
+        let defaults = UserDefaults.standard
+        for channel in DSHChannel.allCases {
+            if let raw = defaults.string(forKey: Self.keyPrefix + channel.rawValue),
+               let url = Self.parse(raw) {
+                endpoints[channel] = url
             }
-            guard var components = URLComponents(string: text), components.host != nil else { continue }
-            if components.path.isEmpty { components.path = "/" }
-            guard let url = components.url else { continue }
-            if !urls.contains(url) { urls.append(url) }
         }
-        return urls.isEmpty ? nil : urls
+
+        // 从旧版「一个输入框填多行」迁移：按顺序填进三个通道
+        if endpoints.isEmpty,
+           let legacy = defaults.string(forKey: Self.legacyKey) {
+            let parts = legacy.split(whereSeparator: { $0 == "\n" || $0 == "," })
+            for (index, part) in parts.enumerated() where index < DSHChannel.allCases.count {
+                let channel = DSHChannel.allCases[index]
+                if let url = Self.parse(String(part)) {
+                    endpoints[channel] = url
+                    defaults.set(url.absoluteString, forKey: Self.keyPrefix + channel.rawValue)
+                }
+            }
+            defaults.removeObject(forKey: Self.legacyKey)
+        }
     }
 
-    func pair(from raw: String) throws {
-        guard let urls = Self.parseList(raw) else { throw PairError.malformed }
-        endpoints = urls
-        activeIndex = 0
-        pairInput = ""
-        UserDefaults.standard.set(urls.map(\.absoluteString).joined(separator: "\n"), forKey: Self.listKey)
+    /// 只接受 http(s)，缺协议头时补 http://
+    static func parse(_ raw: String) -> URL? {
+        var text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return nil }
+        let lower = text.lowercased()
+        if !lower.hasPrefix("http://") && !lower.hasPrefix("https://") {
+            text = "http://" + text
+        }
+        guard var components = URLComponents(string: text), components.host != nil else { return nil }
+        if components.path.isEmpty { components.path = "/" }
+        return components.url
     }
 
-    /// 换到下一个候选地址。已经是最后一个就返回 false。
-    func advance() -> Bool {
-        guard activeIndex + 1 < endpoints.count else { return false }
-        activeIndex += 1
-        return true
+    /// 保存后立刻持久化 —— 这就是「自动锁定」
+    func save(_ raw: String, for channel: DSHChannel) throws {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            clear(channel)
+            return
+        }
+        guard let url = Self.parse(trimmed) else { throw StoreError.malformed }
+        endpoints[channel] = url
+        UserDefaults.standard.set(url.absoluteString, forKey: Self.keyPrefix + channel.rawValue)
     }
 
-    func restart() {
-        activeIndex = 0
+    func clear(_ channel: DSHChannel) {
+        endpoints.removeValue(forKey: channel)
+        UserDefaults.standard.removeObject(forKey: Self.keyPrefix + channel.rawValue)
+        if active == channel {
+            active = nil
+            latency = nil
+        }
     }
 
-    /// 记下当前地址可用，下次启动先试它
-    func markGood() {
-        UserDefaults.standard.set(activeIndex, forKey: Self.goodKey)
+    // MARK: 连接
+
+    func connect(_ channel: DSHChannel) {
+        guard endpoints[channel] != nil else { return }
+        active = channel
+        latency = nil
     }
 
-    func forget() {
-        UserDefaults.standard.removeObject(forKey: Self.listKey)
-        UserDefaults.standard.removeObject(forKey: Self.goodKey)
-        UserDefaults.standard.removeObject(forKey: Self.legacyKey)
-        endpoints = []
-        activeIndex = 0
+    func disconnect() {
+        active = nil
+        latency = nil
     }
 
-    enum PairError: LocalizedError {
+    enum StoreError: LocalizedError {
         case malformed
 
         var errorDescription: String? {
-            "地址格式不对。多个地址用换行或逗号分开，形如 192.168.1.124:8765/?k=123456"
+            "地址格式不对，形如 192.168.1.124:8765/?k=338599"
         }
     }
 }

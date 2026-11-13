@@ -39,6 +39,8 @@
 	</dict>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>连接同一局域网内运行 DSH 的电脑</string>
+	<key>NSCameraUsageDescription</key>
+	<string>拍照后直接作为附件上传到 DSH 会话</string>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
 	<key>UILaunchScreen</key>

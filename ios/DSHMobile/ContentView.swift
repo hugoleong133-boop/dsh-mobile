@@ -2,6 +2,7 @@ import SwiftUI
 import UIKit
 import WebKit
 import UniformTypeIdentifiers
+import PhotosUI
 
 enum AppInfo {
     static var versionLabel: String {
@@ -682,6 +683,30 @@ struct FailurePanel: View {
 
 // MARK: - WebView 壳
 
+/// 多选照片时按 provider 的原始顺序收集导出结果。
+/// `loadDataRepresentation` 的回调并发到达，用锁而不是捕获 var 拼接。
+private final class PhotoCollector {
+    private let lock = NSLock()
+    private var slots: [URL?]
+
+    init(count: Int) {
+        slots = Array(repeating: nil, count: count)
+    }
+
+    func set(_ url: URL?, at index: Int) {
+        guard slots.indices.contains(index) else { return }
+        lock.lock()
+        slots[index] = url
+        lock.unlock()
+    }
+
+    func urls() -> [URL] {
+        lock.lock()
+        defer { lock.unlock() }
+        return slots.compactMap { $0 }
+    }
+}
+
 struct WebContainer: UIViewRepresentable {
     let url: URL
     let reloadToken: Int
@@ -835,7 +860,9 @@ struct WebContainer: UIViewRepresentable {
         view.configuration.userContentController.removeScriptMessageHandler(forName: "dshmPing")
     }
 
-    final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler, UIDocumentPickerDelegate {
+    final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler,
+                             UIDocumentPickerDelegate, PHPickerViewControllerDelegate,
+                             UIImagePickerControllerDelegate, UINavigationControllerDelegate {
         private let parent: WebContainer
         private var loadedKey = ""
         private var openPanelCompletion: (([URL]?) -> Void)?
@@ -932,19 +959,172 @@ struct WebContainer: UIViewRepresentable {
             return nil
         }
 
+        // MARK: 文件 / 照片选择
+        //
+        // WebKit 只把页面的 accept 传到这里：WKOpenPanelParameters.acceptMIMETypes。
+        // 旧实现写死 UIDocumentPickerViewController + 一组混合 UTI（.item/.image/…），
+        // 等于无视 accept —— 页面写 accept="image/*" 也只会进「文件」，相册和相机
+        // 从来没被调用过。现在按 accept 分支：图片请求先给「照片图库 / 拍照 / 选取文件」，
+        // 其余仍走原文件选择器。
+
         @available(iOS 18.4, *)
         func webView(_ webView: WKWebView,
                      runOpenPanelWith parameters: WKOpenPanelParameters,
                      initiatedByFrame frame: WKFrameInfo,
                      completionHandler: @escaping ([URL]?) -> Void) {
             openPanelCompletion = completionHandler
+            let multiple = parameters.allowsMultipleSelection
+            let wantsImages = parameters.acceptMIMETypes.contains { type in
+                let lower = type.lowercased()
+                return lower == "image/*" || lower.hasPrefix("image/")
+            }
+            guard wantsImages, let host = topViewController() else {
+                presentDocumentPicker(multiple: multiple)
+                return
+            }
+
+            let sheet = UIAlertController(title: "添加照片", message: nil, preferredStyle: .actionSheet)
+            // 从 actionSheet 的 action 里立刻 present 另一个控制器，iOS 上偶尔会静默失败
+            // （旧 sheet 还在 dismiss 动画里）。统一让一帧。
+            sheet.addAction(UIAlertAction(title: "照片图库", style: .default) { [weak self] _ in
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                    self?.presentPhotoLibrary(multiple: multiple)
+                }
+            })
+            if UIImagePickerController.isSourceTypeAvailable(.camera) {
+                sheet.addAction(UIAlertAction(title: "拍照", style: .default) { [weak self] _ in
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                        self?.presentCamera()
+                    }
+                })
+            }
+            sheet.addAction(UIAlertAction(title: "选取文件", style: .default) { [weak self] _ in
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                    self?.presentDocumentPicker(multiple: multiple)
+                }
+            })
+            sheet.addAction(UIAlertAction(title: "取消", style: .cancel) { [weak self] _ in
+                self?.finishOpenPanel(nil)
+            })
+            if let pop = sheet.popoverPresentationController {
+                pop.sourceView = host.view
+                pop.sourceRect = CGRect(x: host.view.bounds.midX, y: host.view.bounds.midY, width: 0, height: 0)
+                pop.permittedArrowDirections = []
+            }
+            host.present(sheet, animated: true)
+        }
+
+        private func presentDocumentPicker(multiple: Bool) {
             let picker = UIDocumentPickerViewController(
                 forOpeningContentTypes: [.item, .image, .movie, .audio, .text, .pdf, .data],
                 asCopy: true
             )
-            picker.allowsMultipleSelection = parameters.allowsMultipleSelection
+            picker.allowsMultipleSelection = multiple
             picker.delegate = self
             topViewController()?.present(picker, animated: true)
+        }
+
+        private func presentPhotoLibrary(multiple: Bool) {
+            var config = PHPickerConfiguration()
+            config.filter = .images
+            // 0 = 不限制；单选的 input 只允许一张，和页面语义保持一致。
+            config.selectionLimit = multiple ? 0 : 1
+            config.preferredAssetRepresentationMode = .current
+            let picker = PHPickerViewController(configuration: config)
+            picker.delegate = self
+            topViewController()?.present(picker, animated: true)
+        }
+
+        private func presentCamera() {
+            guard UIImagePickerController.isSourceTypeAvailable(.camera) else {
+                finishOpenPanel(nil)
+                return
+            }
+            let picker = UIImagePickerController()
+            picker.sourceType = .camera
+            picker.cameraCaptureMode = .photo
+            picker.delegate = self
+            topViewController()?.present(picker, animated: true)
+        }
+
+        private func finishOpenPanel(_ urls: [URL]?) {
+            let completion = openPanelCompletion
+            openPanelCompletion = nil
+            completion?(urls)
+        }
+
+        // MARK: PHPicker
+
+        func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
+            picker.dismiss(animated: true)
+            guard !results.isEmpty else {
+                finishOpenPanel(nil)
+                return
+            }
+            exportPhotos(results)
+        }
+
+        /// PHPicker 交回的是 NSItemProvider，WebKit 只接受沙盒里可读的 URL，
+        /// 所以统一导出成 JPEG 临时文件再回调（页面侧也就不必再处理 HEIC）。
+        private func exportPhotos(_ results: [PHPickerResult]) {
+            let group = DispatchGroup()
+            let collector = PhotoCollector(count: results.count)
+
+            for (index, result) in results.enumerated() {
+                let provider = result.itemProvider
+                guard let identifier = Self.imageTypeIdentifier(of: provider) else { continue }
+                group.enter()
+                provider.loadDataRepresentation(forTypeIdentifier: identifier) { data, _ in
+                    defer { group.leave() }
+                    guard let data, let image = UIImage(data: data) else { return }
+                    collector.set(Self.writeJPEG(image, named: provider.suggestedName), at: index)
+                }
+            }
+
+            group.notify(queue: .main) { [weak self] in
+                let urls = collector.urls()
+                self?.finishOpenPanel(urls.isEmpty ? nil : urls)
+            }
+        }
+
+        private static func imageTypeIdentifier(of provider: NSItemProvider) -> String? {
+            for identifier in provider.registeredTypeIdentifiers {
+                guard let type = UTType(identifier), type.conforms(to: .image) else { continue }
+                return identifier
+            }
+            return nil
+        }
+
+        private static func writeJPEG(_ image: UIImage, named suggested: String?) -> URL? {
+            guard let data = image.jpegData(compressionQuality: 0.92) else { return nil }
+            let raw = (suggested ?? "photo").trimmingCharacters(in: .whitespacesAndNewlines)
+            let stem = raw.isEmpty ? "photo" : String(raw.prefix(48))
+            let name = "\(stem)-\(UUID().uuidString.prefix(8)).jpg"
+            let url = FileManager.default.temporaryDirectory.appendingPathComponent(name)
+            do {
+                try data.write(to: url)
+                return url
+            } catch {
+                return nil
+            }
+        }
+
+        // MARK: 相机
+
+        func imagePickerController(_ picker: UIImagePickerController,
+                                   didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey: Any]) {
+            picker.dismiss(animated: true)
+            guard let image = info[.originalImage] as? UIImage,
+                  let url = Self.writeJPEG(image, named: "camera") else {
+                finishOpenPanel(nil)
+                return
+            }
+            finishOpenPanel([url])
+        }
+
+        func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
+            picker.dismiss(animated: true)
+            finishOpenPanel(nil)
         }
 
         func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {

@@ -372,6 +372,7 @@ iOS 设置 → 通用 → VPN与设备管理 → VPN → 点 Tailscale 那行右
 |---|---|---|---|
 | `window.confirm` / `alert` | `dsh-session-delete-cascade` 等插件 | 点「删除会话」毫无反应（confirm 同步返回 false） | App 实现 `WKUIDelegate` 对话框 **+ 页面层兜底**（见下） |
 | `<input type="file">` | 附件上传 | 点附件按钮不弹选择器 | App 实现 `runOpenPanelWith`（**需 iOS 18.4+**，受 Apple API 限制） |
+| file input 的 `accept="image/*"` | `dsh-photo` 相册上传插件 | 页面要相册，App 里只弹「文件」，照片得先导出到文件 App | 按 `WKOpenPanelParameters.acceptMIMETypes` 分支：图片请求弹「照片图库 / 拍照 / 选取文件」，其余仍走文件选择器（2026-11-13 改） |
 | `navigator.clipboard` | 代码块复制、导出 | http 地址下不是安全上下文，复制按钮失效 | 注入 `execCommand('copy')` 兜底 |
 | `<a download>` + `URL.createObjectURL` | 导出会话日志、deliverables | 点导出什么都不发生（WKWebView 不下载 blob） | 注入脚本拦点击 → 消息桥接 → 系统分享面板 |
 | `window.open` / `target=_blank` | 部分链接 | 点了无反应 | App 实现 `createWebViewWith`，改为同窗口打开 |

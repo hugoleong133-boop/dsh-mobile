@@ -128,7 +128,7 @@ if (-not $TlsCert -and -not $TlsKey) {
 }
 
 $nodeArgs = @(
-  (Join-Path $here 'server.mjs'),
+  (Join-Path $here 'supervisor.mjs'),   # supervisor 守着 server.mjs，退出即重启
   '--port', $Port,
   '--upstream-port', $upstreamArg,
   '--state', $stateFile,

@@ -3,7 +3,6 @@ import UIKit
 import WebKit
 import UniformTypeIdentifiers
 
-/// 装包后肉眼核对版本用：构建号 = git 提交短哈希
 enum AppInfo {
     static var versionLabel: String {
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
@@ -20,7 +19,7 @@ struct RootView: View {
             SessionView()
                 .ignoresSafeArea(.container, edges: .bottom)
         } else {
-            ChannelPickerView()
+            HomeView()
         }
     }
 }
@@ -29,13 +28,11 @@ struct RootView: View {
 
 struct LatencyBadge: View {
     let latency: Int?
-    var connected: Bool = true
+    var connected: Bool = false
 
     var body: some View {
         HStack(spacing: 6) {
-            Circle()
-                .fill(dotColor)
-                .frame(width: 7, height: 7)
+            Circle().fill(dotColor).frame(width: 7, height: 7)
             Text(label)
                 .font(.system(size: 12, weight: .medium, design: .monospaced))
                 .foregroundStyle(.secondary)
@@ -43,7 +40,7 @@ struct LatencyBadge: View {
         .padding(.horizontal, 11)
         .padding(.vertical, 5)
         .background(.ultraThinMaterial, in: Capsule())
-        .overlay(Capsule().stroke(Color.white.opacity(0.08), lineWidth: 0.5))
+        .overlay(Capsule().stroke(Color.white.opacity(0.10), lineWidth: 0.5))
     }
 
     private var label: String {
@@ -61,123 +58,414 @@ struct LatencyBadge: View {
     }
 }
 
+// MARK: - 首页：选软件
+
+struct HomeView: View {
+    @EnvironmentObject private var store: EndpointStore
+    @State private var path: [UUID] = []
+    @State private var showManager = false
+    @State private var renameTarget: UUID?
+    @State private var renameText = ""
+
+    var body: some View {
+        NavigationStack(path: $path) {
+            ZStack {
+                Palette.background.ignoresSafeArea()
+
+                VStack(spacing: 0) {
+                    header
+
+                    if store.targets.isEmpty {
+                        emptyState
+                    } else {
+                        ScrollView {
+                            LazyVStack(spacing: 12) {
+                                ForEach(store.targets) { target in
+                                    Button {
+                                        path.append(target.id)
+                                    } label: {
+                                        TargetCard(target: target)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .contextMenu {
+                                        Button {
+                                            renameTarget = target.id
+                                            renameText = target.name
+                                        } label: {
+                                            Label("重命名", systemImage: "pencil")
+                                        }
+                                        Button(role: .destructive) {
+                                            store.delete(target.id)
+                                        } label: {
+                                            Label("删除", systemImage: "trash")
+                                        }
+                                    }
+                                }
+                            }
+                            .padding(.horizontal, 20)
+                            .padding(.top, 8)
+                            .padding(.bottom, 28)
+                        }
+                    }
+
+                    Text(AppInfo.versionLabel)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(.secondary.opacity(0.40))
+                        .padding(.bottom, 10)
+                }
+            }
+            .navigationDestination(for: UUID.self) { id in
+                ChannelListView(targetId: id)
+            }
+            .toolbar(.hidden, for: .navigationBar)
+        }
+        .sheet(isPresented: $showManager) {
+            AppManagerView()
+                .environmentObject(store)
+        }
+        .alert(
+            "重命名",
+            isPresented: Binding(
+                get: { renameTarget != nil },
+                set: { if !$0 { renameTarget = nil } }
+            )
+        ) {
+            TextField("名称", text: $renameText)
+            Button("取消", role: .cancel) { renameTarget = nil }
+            Button("保存") {
+                if let id = renameTarget { store.rename(id, to: renameText) }
+                renameTarget = nil
+            }
+        }
+    }
+
+    private var header: some View {
+        ZStack {
+            LatencyBadge(latency: nil, connected: false)
+
+            HStack {
+                Button {
+                    showManager = true
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: 34, height: 34)
+                        .background(Color.white.opacity(0.10), in: Circle())
+                }
+                .buttonStyle(.plain)
+
+                Spacer()
+
+                Button {
+                    showManager = true
+                } label: {
+                    Image(systemName: "slider.horizontal.3")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 34, height: 34)
+                        .background(Color.white.opacity(0.10), in: Circle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 6)
+        .padding(.bottom, 12)
+    }
+
+    private var emptyState: some View {
+        VStack(spacing: 14) {
+            Spacer()
+            Image(systemName: "square.stack.3d.up.slash")
+                .font(.system(size: 40, weight: .light))
+                .foregroundStyle(.secondary.opacity(0.5))
+            Text("还没有添加软件")
+                .font(.system(size: 16, weight: .medium))
+                .foregroundStyle(.white.opacity(0.85))
+            Text("点左上角 + 添加一个")
+                .font(.system(size: 13))
+                .foregroundStyle(.secondary)
+            Spacer()
+            Spacer()
+        }
+    }
+}
+
+struct TargetCard: View {
+    let target: AppTarget
+
+    var body: some View {
+        HStack(spacing: 14) {
+            RoundedRectangle(cornerRadius: 13, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            Palette.accent(target.accent),
+                            Palette.accent(target.accent).opacity(0.55),
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+                .frame(width: 46, height: 46)
+                .overlay(
+                    Text(target.initial)
+                        .font(.system(size: 20, weight: .bold))
+                        .foregroundStyle(.white)
+                )
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(target.name)
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(.white)
+                Text(target.configuredCount > 0 ? "\(target.configuredCount) 条通道已配置" : "未配置地址")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer(minLength: 8)
+
+            Image(systemName: "chevron.right")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.secondary.opacity(0.55))
+        }
+        .padding(16)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(Palette.cardFill)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(Palette.cardStroke, lineWidth: 1)
+        )
+    }
+}
+
+// MARK: - 软件管理
+
+struct AppManagerView: View {
+    @EnvironmentObject private var store: EndpointStore
+    @Environment(\.dismiss) private var dismiss
+    @State private var newName = ""
+    @State private var renameTarget: UUID?
+    @State private var renameText = ""
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                Palette.background.ignoresSafeArea()
+                List {
+                    Section {
+                        ForEach(store.targets) { target in
+                            Button {
+                                renameTarget = target.id
+                                renameText = target.name
+                            } label: {
+                                HStack(spacing: 12) {
+                                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                                        .fill(Palette.accent(target.accent))
+                                        .frame(width: 30, height: 30)
+                                        .overlay(
+                                            Text(target.initial)
+                                                .font(.system(size: 14, weight: .bold))
+                                                .foregroundStyle(.white)
+                                        )
+                                    Text(target.name)
+                                        .foregroundStyle(.white)
+                                    Spacer()
+                                    Text("\(target.configuredCount) 通道")
+                                        .font(.system(size: 12))
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            .buttonStyle(.plain)
+                            .listRowBackground(Color.white.opacity(0.07))
+                        }
+                        .onDelete { indexSet in
+                            for index in indexSet { store.delete(store.targets[index].id) }
+                        }
+                    }
+
+                    Section {
+                        HStack(spacing: 12) {
+                            Image(systemName: "plus")
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(Palette.accents[0])
+                                .frame(width: 30, height: 30)
+                            TextField("新增软件名称", text: $newName)
+                                .foregroundStyle(.white)
+                            Button("添加") {
+                                store.addTarget(name: newName)
+                                newName = ""
+                            }
+                            .font(.system(size: 14, weight: .semibold))
+                            .disabled(newName.trimmingCharacters(in: .whitespaces).isEmpty)
+                        }
+                        .listRowBackground(Color.white.opacity(0.07))
+                    }
+                }
+                .scrollContentBackground(.hidden)
+            }
+            .navigationTitle("软件")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("完成") { dismiss() }
+                }
+            }
+            .alert(
+                "重命名",
+                isPresented: Binding(
+                    get: { renameTarget != nil },
+                    set: { if !$0 { renameTarget = nil } }
+                )
+            ) {
+                TextField("名称", text: $renameText)
+                Button("取消", role: .cancel) { renameTarget = nil }
+                Button("保存") {
+                    if let id = renameTarget { store.rename(id, to: renameText) }
+                    renameTarget = nil
+                }
+            }
+        }
+    }
+}
+
 // MARK: - 通道选择
 
-struct ChannelPickerView: View {
+struct ChannelListView: View {
+    let targetId: UUID
     @EnvironmentObject private var store: EndpointStore
     @State private var showSettings = false
 
+    private var target: AppTarget? { store.target(targetId) }
+
     var body: some View {
         ZStack {
-            Color(red: 0.08, green: 0.08, blue: 0.09).ignoresSafeArea()
+            Palette.background.ignoresSafeArea()
 
             VStack(spacing: 0) {
-                LatencyBadge(latency: nil, connected: false)
-                    .padding(.top, 8)
-
-                Spacer(minLength: 0)
-
-                VStack(spacing: 12) {
-                    ForEach(DSHChannel.allCases) { channel in
-                        ChannelButton(channel: channel)
+                ZStack {
+                    LatencyBadge(
+                        latency: store.latency,
+                        connected: store.activeTargetId == targetId
+                    )
+                    HStack {
+                        Spacer()
+                        Button {
+                            showSettings = true
+                        } label: {
+                            Image(systemName: "gearshape.fill")
+                                .font(.system(size: 15, weight: .semibold))
+                                .foregroundStyle(.secondary)
+                                .frame(width: 34, height: 34)
+                                .background(Color.white.opacity(0.10), in: Circle())
+                        }
+                        .buttonStyle(.plain)
                     }
                 }
-                .padding(.horizontal, 24)
+                .padding(.horizontal, 20)
+                .padding(.top, 4)
+                .padding(.bottom, 14)
 
-                Spacer(minLength: 0)
-
-                Button {
-                    showSettings = true
-                } label: {
-                    Text("设置")
-                        .font(.system(size: 15, weight: .medium))
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 13)
-                        .background(Color.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 12))
-                        .foregroundStyle(.secondary)
+                ScrollView {
+                    VStack(spacing: 12) {
+                        ForEach(DSHChannel.allCases) { channel in
+                            ChannelRow(
+                                channel: channel,
+                                url: store.url(in: targetId, channel: channel),
+                                onConnect: { store.connect(targetId: targetId, channel: channel) },
+                                onConfigure: { showSettings = true }
+                            )
+                        }
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.bottom, 24)
                 }
-                .buttonStyle(.plain)
-                .padding(.horizontal, 24)
-                .padding(.bottom, 10)
-
-                Text(AppInfo.versionLabel)
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(.secondary.opacity(0.45))
-                    .padding(.bottom, 12)
             }
         }
+        .navigationTitle(target?.name ?? "通道")
+        .navigationBarTitleDisplayMode(.large)
+        .tint(Palette.accents[0])
         .sheet(isPresented: $showSettings) {
-            ChannelSettingsView()
+            ChannelSettingsView(targetId: targetId)
                 .environmentObject(store)
         }
     }
 }
 
-struct ChannelButton: View {
+struct ChannelRow: View {
     let channel: DSHChannel
-    @EnvironmentObject private var store: EndpointStore
-    @State private var showSettings = false
+    let url: URL?
+    let onConnect: () -> Void
+    let onConfigure: () -> Void
 
-    private var configured: Bool { store.isConfigured(channel) }
+    private var configured: Bool { url != nil }
 
     var body: some View {
         Button {
-            if configured {
-                store.connect(channel)
-            } else {
-                showSettings = true
-            }
+            configured ? onConnect() : onConfigure()
         } label: {
-            HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 14) {
+                Image(systemName: channel.symbol)
+                    .font(.system(size: 17, weight: .medium))
+                    .foregroundStyle(configured ? Palette.accents[0] : Color.secondary.opacity(0.7))
+                    .frame(width: 38, height: 38)
+                    .background(
+                        RoundedRectangle(cornerRadius: 11, style: .continuous)
+                            .fill(Color.white.opacity(configured ? 0.10 : 0.05))
+                    )
+
+                VStack(alignment: .leading, spacing: 4) {
                     Text(channel.title)
-                        .font(.system(size: 17, weight: .semibold))
-                        .foregroundStyle(.white)
-                    Text(store.url(for: channel)?.absoluteString ?? "未设置")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(.white.opacity(configured ? 1 : 0.55))
+                    Text(url?.absoluteString ?? "未设置")
                         .font(.system(size: 11, design: .monospaced))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .truncationMode(.middle)
                 }
+
                 Spacer(minLength: 8)
+
                 Image(systemName: configured ? "chevron.right" : "plus.circle")
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(configured ? Color.secondary : Color(red: 0.29, green: 0.42, blue: 1.0))
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(configured ? Color.secondary.opacity(0.6) : Palette.accents[0])
             }
-            .padding(.horizontal, 18)
-            .padding(.vertical, 15)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(15)
             .background(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(configured ? Color.white.opacity(0.08) : Color.white.opacity(0.03))
+                RoundedRectangle(cornerRadius: 15, style: .continuous)
+                    .fill(configured ? Palette.cardFill : Palette.cardFillDim)
             )
             .overlay(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .stroke(configured ? Color.clear : Color.white.opacity(0.08), lineWidth: 1)
+                RoundedRectangle(cornerRadius: 15, style: .continuous)
+                    .stroke(configured ? Palette.cardStroke : Palette.cardStrokeDim, lineWidth: 1)
             )
         }
         .buttonStyle(.plain)
-        .sheet(isPresented: $showSettings) {
-            ChannelSettingsView()
-                .environmentObject(store)
-        }
     }
 }
 
-// MARK: - 设置
+// MARK: - 通道设置
 
 struct ChannelSettingsView: View {
+    let targetId: UUID
     @EnvironmentObject private var store: EndpointStore
     @Environment(\.dismiss) private var dismiss
 
     @State private var drafts: [DSHChannel: String] = [:]
     @State private var error: String?
 
-    var body: some View {
-        NavigationView {
-            ZStack {
-                Color(red: 0.08, green: 0.08, blue: 0.09).ignoresSafeArea()
+    private var targetName: String {
+        store.target(targetId)?.name ?? "通道"
+    }
 
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                Palette.background.ignoresSafeArea()
                 ScrollView {
                     VStack(alignment: .leading, spacing: 20) {
                         ForEach(DSHChannel.allCases) { channel in
@@ -188,11 +476,9 @@ struct ChannelSettingsView: View {
                                         .foregroundStyle(.white)
                                     Spacer()
                                     if !(drafts[channel] ?? "").isEmpty {
-                                        Button("清除") {
-                                            drafts[channel] = ""
-                                        }
-                                        .font(.system(size: 12))
-                                        .foregroundStyle(.secondary)
+                                        Button("清除") { drafts[channel] = "" }
+                                            .font(.system(size: 12))
+                                            .foregroundStyle(.secondary)
                                     }
                                 }
 
@@ -202,7 +488,11 @@ struct ChannelSettingsView: View {
                                     .keyboardType(.URL)
                                     .font(.system(size: 13, design: .monospaced))
                                     .padding(12)
-                                    .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 10))
+                                    .background(Color.white.opacity(0.09), in: RoundedRectangle(cornerRadius: 10))
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 10)
+                                            .stroke(Color.white.opacity(0.10), lineWidth: 1)
+                                    )
 
                                 Text(channel.caption)
                                     .font(.system(size: 11))
@@ -211,15 +501,13 @@ struct ChannelSettingsView: View {
                         }
 
                         if let error {
-                            Text(error)
-                                .font(.system(size: 12))
-                                .foregroundStyle(.red)
+                            Text(error).font(.system(size: 12)).foregroundStyle(.red)
                         }
                     }
                     .padding(20)
                 }
             }
-            .navigationTitle("通道地址")
+            .navigationTitle(targetName)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -244,7 +532,7 @@ struct ChannelSettingsView: View {
     private func loadDrafts() {
         var loaded: [DSHChannel: String] = [:]
         for channel in DSHChannel.allCases {
-            loaded[channel] = store.url(for: channel)?.absoluteString ?? ""
+            loaded[channel] = store.target(targetId)?.channels[channel.rawValue] ?? ""
         }
         drafts = loaded
     }
@@ -252,7 +540,7 @@ struct ChannelSettingsView: View {
     private func save() {
         do {
             for channel in DSHChannel.allCases {
-                try store.save(drafts[channel] ?? "", for: channel)
+                try store.save(drafts[channel] ?? "", in: targetId, channel: channel)
             }
             error = nil
             dismiss()
@@ -299,7 +587,6 @@ struct SessionView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
 
-            // 顶部：中间延迟 / 右侧菜单
             ZStack {
                 LatencyBadge(latency: store.latency, connected: true)
                 HStack {
@@ -325,16 +612,28 @@ struct SessionView: View {
                 reloadToken += 1
             }
             Button("切换通道") { store.disconnect() }
-            Button("通道设置") { showSettings = true }
+            if let id = store.activeTargetId {
+                Button("通道设置") { channelSettingsTarget = id; showSettings = true }
+            }
             if let url { Button("在 Safari 打开") { UIApplication.shared.open(url) } }
             Button("取消", role: .cancel) {}
         } message: {
-            Text((store.active?.title ?? "") + " · " + AppInfo.versionLabel)
+            Text(menuTitle)
         }
         .sheet(isPresented: $showSettings) {
-            ChannelSettingsView()
-                .environmentObject(store)
+            if let id = channelSettingsTarget {
+                ChannelSettingsView(targetId: id)
+                    .environmentObject(store)
+            }
         }
+    }
+
+    @State private var channelSettingsTarget: UUID?
+
+    private var menuTitle: String {
+        let name = store.activeTarget?.name ?? ""
+        let channel = store.activeChannel?.title ?? ""
+        return "\(name) · \(channel) · \(AppInfo.versionLabel)"
     }
 }
 
@@ -370,9 +669,6 @@ struct FailurePanel: View {
 
 // MARK: - WebView 壳
 
-/// WKWebView 默认不工作、但 DSH 前端实际用到的东西，这里逐个补上：
-///   文件选择器 / alert-confirm-prompt / 剪贴板兜底 / blob 下载 / window.open
-/// 另外定期在页面内 fetch /__m/status 测 RTT，回传给原生显示在顶部。
 struct WebContainer: UIViewRepresentable {
     let url: URL
     let reloadToken: Int
@@ -399,7 +695,6 @@ struct WebContainer: UIViewRepresentable {
       if (window.__dshmBridgeInstalled) return;
       window.__dshmBridgeInstalled = true;
 
-      // ---- 剪贴板兜底：http 下 navigator.clipboard 不存在 ----
       function fallbackWriteText(text) {
         return new Promise(function (resolve, reject) {
           try {
@@ -434,10 +729,9 @@ struct WebContainer: UIViewRepresentable {
               }
             }
           });
-        } catch (e) { /* 保持原样 */ }
+        } catch (e) {}
       }
 
-      // ---- blob 下载桥接 ----
       var objectUrls = {};
       var nativeCreate = URL.createObjectURL.bind(URL);
       URL.createObjectURL = function (obj) {
@@ -513,7 +807,7 @@ struct WebContainer: UIViewRepresentable {
         view.scrollView.keyboardDismissMode = .interactive
         view.scrollView.contentInsetAdjustmentBehavior = .never
         view.isOpaque = false
-        view.backgroundColor = UIColor(red: 0.08, green: 0.08, blue: 0.09, alpha: 1)
+        view.backgroundColor = UIColor(red: 0.055, green: 0.055, blue: 0.075, alpha: 1)
         context.coordinator.load(url, token: reloadToken, in: view)
         return view
     }
@@ -546,8 +840,6 @@ struct WebContainer: UIViewRepresentable {
             view.load(request)
         }
 
-        // MARK: 延迟探测
-
         func startPinging(_ webView: WKWebView) {
             stopPinging()
             ping(webView)
@@ -567,8 +859,6 @@ struct WebContainer: UIViewRepresentable {
         private func ping(_ webView: WKWebView) {
             webView.evaluateJavaScript(WebContainer.pingJS, completionHandler: nil)
         }
-
-        // MARK: 导航
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             parent.failure = nil
@@ -629,8 +919,6 @@ struct WebContainer: UIViewRepresentable {
             return nil
         }
 
-        // MARK: 文件选择器
-
         @available(iOS 18.4, *)
         func webView(_ webView: WKWebView,
                      runOpenPanelWith parameters: WKOpenPanelParameters,
@@ -656,8 +944,6 @@ struct WebContainer: UIViewRepresentable {
             openPanelCompletion = nil
         }
 
-        // MARK: 消息桥
-
         func userContentController(_ userContentController: WKUserContentController,
                                    didReceive message: WKScriptMessage) {
             if message.name == "dshmPing" {
@@ -682,8 +968,6 @@ struct WebContainer: UIViewRepresentable {
                 host.present(activity, animated: true)
             }
         }
-
-        // MARK: 原生对话框
 
         private func topViewController() -> UIViewController? {
             let scene = UIApplication.shared.connectedScenes

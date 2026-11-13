@@ -41,10 +41,16 @@
 	<string>连接同一局域网内运行 DSH 的电脑</string>
 	<key>NSCameraUsageDescription</key>
 	<string>拍照后直接作为附件上传到 DSH 会话</string>
+	<!-- 相册当前走 PHPicker（out-of-process，不需要这条权限），
+	     但保留它，避免以后切到 UIImagePickerController 的 photoLibrary 源时崩。 -->
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>从相册选择图片作为附件上传到 DSH 会话</string>
 	<!-- WKWebView 的 getUserMedia 走 TCC：没有这一条，WebKit 请求麦克风时
 	     直接失败（部分系统版本会终止进程）。文字只用于系统弹窗。 -->
 	<key>NSMicrophoneUsageDescription</key>
 	<string>说话时用手机麦克风录音，语音在你的电脑上转成文字填进输入框</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>把会话里生成/下载的图片保存到相册</string>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
 	<key>UILaunchScreen</key>

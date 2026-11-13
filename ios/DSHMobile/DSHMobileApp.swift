@@ -1,10 +1,27 @@
 import SwiftUI
+import AVFoundation
 
 /// 应用入口。DSH Mobile 是个 WKWebView 壳：
 /// 真正的程序跑在电脑上，这里只负责「选软件 → 选通道 → 显示延迟」。
 @main
 struct DSHMobileApp: App {
     @StateObject private var store = EndpointStore()
+
+    init() {
+        // 语音输入要录音、自动朗读要出声，两者共用同一个音频会话：
+        //   .playAndRecord   → getUserMedia 能被系统接受
+        //   .defaultToSpeaker → 播放走扬声器，不闷在听筒里
+        //   .allowBluetooth   → 蓝牙耳机可用
+        //   .mixWithOthers    → 不打断用户正在放的音乐
+        // 不设这一层时，静音键打开后 TTS 的 AudioContext 播放会被系统直接静音。
+        let session = AVAudioSession.sharedInstance()
+        try? session.setCategory(
+            .playAndRecord,
+            mode: .default,
+            options: [.defaultToSpeaker, .allowBluetooth, .mixWithOthers]
+        )
+        try? session.setActive(true)
+    }
 
     var body: some Scene {
         WindowGroup {

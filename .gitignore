@@ -1,4 +1,4 @@
-# 运行时产物（含设备密钥，绝不入库）
+# 鏉╂劘顢戦弮鏈甸獓閻椻晪绱欓崥顐ヮ啎婢跺洤鐦戦柦銉礉缂佹繀绗夐崗銉ョ氨閿?
 state.json
 dsh-mobile.pid
 dsh-mobile.log
@@ -9,8 +9,7 @@ start.err
 pair-url.txt
 pairing-qr.png
 tunnel-url.txt
-
-# 隧道工具与日志（cloudflared.exe 有 50 MB，自己下）
+# 闂呇囦壕瀹搞儱鍙挎稉搴㈡）韫囨绱檆loudflared.exe 閺?50 MB閿涘矁鍤滃鍙樼瑓閿?
 tools/cloudflared.exe
 tools/ngrok.exe
 tools/ngrok.zip
@@ -18,8 +17,7 @@ cloudflared.log
 cloudflared.out.log
 ngrok.log
 ngrok.out.log
-
-# iOS 构建
+# iOS 閺嬪嫬缂?
 ios/build/
 ios/DerivedData/
 ios/*.xcodeproj/
@@ -27,8 +25,7 @@ ios/*.ipa
 ios/Payload/
 *.mobileprovision
 *.p12
-
-# 通用
+# 闁氨鏁?
 __pycache__/
 *.pyc
 *.log
@@ -45,4 +42,6 @@ diag.prev.jsonl
 dsh.css
 *.bak-*
 *.ipa
-certs/
+certs*/
+diag*.jsonl
+*.orig*

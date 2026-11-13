@@ -948,7 +948,53 @@ struct WebContainer: UIViewRepresentable {
             if ns.code == -1022 || ns.code == -1004 || ns.code == -1009 || ns.code == -1001 {
                 text += "\n\n检查电脑上 8765 是否在跑，以及这个网络能不能到该地址。"
             }
+            if ns.code == -1202 || ns.code == -1200 || ns.code == -9807 {
+                text += "\n\n这台电脑用的是自签证书。App 已经放行了私有地址的自签证书，"
+                text += "还报错的话说明请求没走到 App 的放行逻辑——试试在 Safari 里打开同一地址。"
+            }
             parent.failure = text
+        }
+
+        /// 接受私有地址的自签证书。
+        ///
+        /// dsh-mobile 在局域网里跑的是自签 TLS：这样网页才是「安全上下文」，
+        /// 语音输入要用的 navigator.mediaDevices 才会存在。代价是证书链默认不被信任，
+        /// WebKit 在握手段直接抛 -1202。
+        ///
+        /// 这里只对私有网段和 tailnet 域名放行，公网域名照常严格校验——
+        /// 真要中间人，得先控制你的内网或 tailnet。
+        func webView(_ webView: WKWebView,
+                     didReceive challenge: URLAuthenticationChallenge,
+                     completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+            guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
+                  let trust = challenge.protectionSpace.serverTrust else {
+                completionHandler(.performDefaultHandling, nil)
+                return
+            }
+
+            let host = challenge.protectionSpace.host
+            guard Self.allowsSelfSigned(host) else {
+                completionHandler(.performDefaultHandling, nil)
+                return
+            }
+
+            completionHandler(.useCredential, URLCredential(trust: trust))
+        }
+
+        private static func allowsSelfSigned(_ host: String) -> Bool {
+            if host == "localhost" || host == "::1" { return true }
+            if host.hasSuffix(".ts.net") { return true }
+
+            let parts = host.split(separator: ".")
+            guard parts.count == 4,
+                  let a = Int(parts[0]),
+                  let b = Int(parts[1]) else { return false }
+
+            if a == 127 { return true }
+            if a == 192 && b == 168 { return true }
+            if a == 10 { return true }
+            if a == 172 && (16...31).contains(b) { return true }
+            return false
         }
 
         func webView(_ webView: WKWebView,

@@ -594,6 +594,25 @@ function handle(req, res) {
 
   // 布局探针回收端：mobile.js 扫出越界元素后 POST 上来，落到 diag.jsonl 供排查。
   // 只接受已配对设备，避免任何路过的人往磁盘写东西。
+  // 自签 CA 下载：手机装一次并信任后，局域网走 HTTPS 才成为安全上下文，
+  // 语音输入（getUserMedia）才有得用。
+  if (pathname === '/__m/ca.cer' || pathname === '/__m/ca.crt') {
+    try {
+      const der = readFileSync(path.join(HERE, 'certs', 'ca.cer'));
+      res.writeHead(200, {
+        'content-type': 'application/x-x509-ca-cert',
+        'content-length': der.byteLength,
+        'content-disposition': 'attachment; filename="dsh-ca.cer"',
+        'cache-control': 'no-store',
+      });
+      res.end(der);
+    } catch (err) {
+      res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
+      res.end(`dsh-mobile: 没有找到 CA 证书（certs/ca.cer）— ${err.message}\n`);
+    }
+    return;
+  }
+
   if (pathname === '/__m/diag' && req.method === 'POST') {
     if (!isAuthed(req)) {
       res.writeHead(401, { 'content-type': 'text/plain; charset=utf-8' });

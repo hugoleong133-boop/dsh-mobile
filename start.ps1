@@ -115,6 +115,18 @@ if (-not $effectivePin) {
   }
 }
 
+# certs/ 里存在自签证书就默认启用 HTTPS ——
+# iOS 只在安全上下文里暴露 navigator.mediaDevices，语音输入靠这一层。
+if (-not $TlsCert -and -not $TlsKey) {
+  $autoCert = Join-Path $here 'certs\server.crt'
+  $autoKey = Join-Path $here 'certs\server.key'
+  if ((Test-Path $autoCert) -and (Test-Path $autoKey)) {
+    $TlsCert = $autoCert
+    $TlsKey = $autoKey
+    Write-Host '  检测到 certs/，启用 HTTPS（手机需信任 dsh-ca.cer）' -ForegroundColor DarkGray
+  }
+}
+
 $nodeArgs = @(
   (Join-Path $here 'server.mjs'),
   '--port', $Port,

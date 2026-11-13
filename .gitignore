@@ -45,3 +45,4 @@ diag.prev.jsonl
 dsh.css
 *.bak-*
 *.ipa
+certs/

@@ -597,6 +597,17 @@ struct SessionView: View {
                 failure = nil
                 reloadToken += 1
             }
+
+            // 直接把另外两条已配置的通道列出来，一步切过去。
+            // 早期的「下一个地址」在三通道模型里没有明确含义，这里换成显式目标。
+            // 不用 ForEach：confirmationDialog 对动态按钮的支持在旧系统上不稳定。
+            if let first = alternates.first {
+                Button("切换到 \(first.title)") { switchTo(first) }
+            }
+            if alternates.count > 1 {
+                Button("切换到 \(alternates[1].title)") { switchTo(alternates[1]) }
+            }
+
             Button("切换") { store.disconnect() }
             if let id = store.activeTargetId {
                 Button("通道设置") { channelSettingsTarget = id; showSettings = true }
@@ -615,6 +626,22 @@ struct SessionView: View {
     }
 
     @State private var channelSettingsTarget: UUID?
+
+    /// 当前软件下、除当前通道外、已经配好地址的通道（最多两条）
+    private var alternates: [DSHChannel] {
+        guard let targetId = store.activeTargetId else { return [] }
+        return DSHChannel.allCases.compactMap { channel in
+            guard channel != store.activeChannel,
+                  store.url(in: targetId, channel: channel) != nil else { return nil }
+            return channel
+        }
+    }
+
+    private func switchTo(_ channel: DSHChannel) {
+        guard let targetId = store.activeTargetId else { return }
+        failure = nil
+        store.connect(targetId: targetId, channel: channel)
+    }
 
     private var menuTitle: String {
         let name = store.activeTarget?.name ?? ""

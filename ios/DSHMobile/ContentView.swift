@@ -865,6 +865,8 @@ struct WebContainer: UIViewRepresentable {
                              UIImagePickerControllerDelegate, UINavigationControllerDelegate {
         private let parent: WebContainer
         private var loadedKey = ""
+        /// 本次加载页面的 host，用于媒体采集授权白名单（换页要跟着换）。
+        private var trustedHost = ""
         private var openPanelCompletion: (([URL]?) -> Void)?
         private var pingTimer: Timer?
 
@@ -876,8 +878,29 @@ struct WebContainer: UIViewRepresentable {
             let key = "\(url.absoluteString)#\(token)"
             guard key != loadedKey else { return }
             loadedKey = key
+            trustedHost = (url.host() ?? "").lowercased()
             let request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 15)
             view.load(request)
+        }
+
+        // MARK: - 麦克风
+        //
+        // iOS 15+ 的 WKWebView 默认拒绝网页的 getUserMedia：必须由 app 在
+        // WKUIDelegate 里逐个 origin 授权。只在「当前加载页面的 host」上放行，
+        // 避免被重定向到别的站点后仍能开麦。
+        func webView(_ webView: WKWebView,
+                     requestMediaCapturePermissionFor origin: WKSecurityOrigin,
+                     initiatedByFrame frame: WKFrameInfo,
+                     type: WKMediaCaptureType,
+                     decisionHandler: @escaping (WKMediaCaptureDecision) -> Void) {
+            let host = origin.host.lowercased()
+            let samePage = !trustedHost.isEmpty && host == trustedHost
+            switch type {
+            case .microphone, .cameraAndMicrophone:
+                decisionHandler(samePage ? .grant : .deny)
+            default:
+                decisionHandler(.prompt)
+            }
         }
 
         func startPinging(_ webView: WKWebView) {
@@ -974,7 +997,8 @@ struct WebContainer: UIViewRepresentable {
                      completionHandler: @escaping ([URL]?) -> Void) {
             openPanelCompletion = completionHandler
             let multiple = parameters.allowsMultipleSelection
-            let wantsImages = parameters.acceptMIMETypes.contains { type in
+            let accepted = Self.acceptedMIMETypes(parameters)
+            let wantsImages = accepted.contains { type in
                 let lower = type.lowercased()
                 return lower == "image/*" || lower.hasPrefix("image/")
             }
@@ -1012,6 +1036,21 @@ struct WebContainer: UIViewRepresentable {
                 pop.permittedArrowDirections = []
             }
             host.present(sheet, animated: true)
+        }
+
+        /// `acceptMIMETypes` 不在 iOS 18.4 的公开头文件里：公开的只有
+        /// allowsMultipleSelection / allowsDirectories，MIME 列表在
+        /// WKOpenPanelParametersPrivate.h，名字是 `_acceptedMIMETypes`。
+        /// 运行时探一下再 KVC；读不到就返回空（等于退回文件选择器，不会崩）。
+        private static func acceptedMIMETypes(_ parameters: WKOpenPanelParameters) -> [String] {
+            let object = parameters as NSObject
+            for key in ["acceptMIMETypes", "_acceptedMIMETypes"] {
+                guard object.responds(to: NSSelectorFromString(key)) else { continue }
+                if let list = object.value(forKey: key) as? [String], !list.isEmpty {
+                    return list
+                }
+            }
+            return []
         }
 
         private func presentDocumentPicker(multiple: Bool) {

@@ -1004,6 +1004,16 @@ struct WebContainer: UIViewRepresentable {
                 decisionHandler(.allow)
                 return
             }
+
+            // 表单提交（POST）一律放行。
+            // 原先对 targetFrame == nil 的导航会重新 webView.load()，
+            // 而 load() 重建的请求会丢掉 body —— 配对页的 PIN 表单就是这样被吞掉的：
+            // 服务端只收到一个空 GET，日志里连一条 [pin] 记录都没有。
+            let httpMethod = (navigationAction.request.httpMethod ?? "GET").uppercased()
+            if httpMethod == "POST" {
+                decisionHandler(.allow)
+                return
+            }
             if target.scheme == "http" || target.scheme == "https" || target.scheme == "about"
                 || target.scheme == "blob" || target.scheme == "data" {
                 if navigationAction.targetFrame == nil {

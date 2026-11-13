@@ -308,6 +308,52 @@
     setInterval(unlock, 2500);
   })();
 
+
+  // ---------------------------------------------------------------- 语音面板几何诊断
+  //
+  // 「按住说话」面板是 bairen-persona 插件画的，几何由 composerBox() 每帧决定。
+  // 出现「面板浮在输入框上方、比输入框高一倍」时，需要知道它到底量到了什么。
+  // 面板出现时把三个矩形一次性报回电脑，比盲改 CSS 快得多。
+  (() => {
+    let reported = false;
+    const tick = () => {
+      const panel = document.getElementById('dsh-ptt-face');
+      if (!panel || reported) return;
+      const pr = panel.getBoundingClientRect();
+      if (pr.width < 40) return;   // 还没真正布局
+
+      const editors = Array.from(document.querySelectorAll('div[contenteditable="true"], textarea'));
+      const editor = editors
+        .map((el) => ({ el, r: el.getBoundingClientRect() }))
+        .sort((a, b) => (b.r.width * b.r.height) - (a.r.width * a.r.height))[0];
+
+      const mic = document.querySelector('[data-dsh-ptt]');
+      const mr = mic ? mic.getBoundingClientRect() : null;
+
+      reported = true;
+      const rect = (r) => r ? {
+        left: Math.round(r.left), top: Math.round(r.top),
+        w: Math.round(r.width), h: Math.round(r.height),
+      } : null;
+
+      fetch('/__m/diag', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          type: 'ptt-geometry',
+          patch: window.__BAIREN_PTT_PATCH__ || 'unknown',
+          viewport: { w: window.innerWidth, h: window.innerHeight },
+          panel: rect(pr),
+          editor: editor ? rect(editor.r) : null,
+          mic: rect(mr),
+          hasMic: !!mic,
+          secure: window.isSecureContext === true,
+        }),
+        credentials: 'same-origin',
+      }).catch(() => {});
+    };
+    setInterval(tick, 1500);
+  })();
   // ---------------------------------------------------------------- 布局探针
   const describe = (el) => {
     const cls = typeof el.className === 'string' ? el.className.trim().split(/\s+/).slice(0, 3).join('.') : '';
@@ -491,6 +537,9 @@
       audioContextState: ctxState,
       hasSpeechSynthesis: !!window.speechSynthesis,
       hasMediaRecorder: typeof MediaRecorder !== 'undefined',
+      pttPatch: window.__BAIREN_PTT_PATCH__ || 'absent',
+      pttMode: !!(window.__DSH_PTT_MODE__ && window.__DSH_PTT_MODE__.value),
+      pttToggleReady: typeof window.__DSH_PTT_TOGGLE__ === 'function',
       mode: inWebView ? 'webview' : (standalone ? 'standalone' : 'safari'),
     };
   };

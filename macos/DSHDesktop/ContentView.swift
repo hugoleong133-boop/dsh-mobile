@@ -724,6 +724,113 @@ struct WebContainer: NSViewRepresentable {
     })();
     """#
 
+    /// 浮动菜单定位兜底。
+    ///
+    /// DSH 的菜单用 CSS Anchor Positioning（anchor-name / position-anchor）
+    /// 决定弹出位置。这个特性要 Safari 26（macOS 26）才支持；更早的 WKWebView
+    /// 直接忽略这两个属性，菜单位置算不出来，就落在容器的左上角——
+    /// 表现就是「点模型选择，弹层跑到左上角」。
+    ///
+    /// 窄屏（iPhone）走的是另一条用 JS 算坐标的路径，所以手机上正常。
+    ///
+    /// 这里做兜底：只在「菜单卡在左上角」或「浏览器不支持 anchor 定位」时才介入，
+    /// 按触发按钮的位置把菜单摆到它上方或下方，并做视口内收敛。
+    static let anchorFixJS = #"""
+    (function () {
+      if (window.__dshmAnchorFix) return;
+      window.__dshmAnchorFix = true;
+
+      var lastTrigger = null;
+
+      function rememberTrigger(e) {
+        var t = e.target;
+        if (!t || !t.closest) return;
+        var el = t.closest('[aria-haspopup],[role="button"],button');
+        if (el) lastTrigger = el;
+      }
+      document.addEventListener('pointerdown', rememberTrigger, true);
+      document.addEventListener('click', rememberTrigger, true);
+
+      function isVisible(el) {
+        var r = el.getBoundingClientRect();
+        return r.width > 4 && r.height > 4;
+      }
+
+      function supportsAnchor() {
+        try {
+          return !!(window.CSS && CSS.supports && CSS.supports('anchor-name: --a'));
+        } catch (e) { return false; }
+      }
+
+      function findTrigger(menu) {
+        // 1) 通过 aria-controls 反查（DSH 会给触发按钮加 aria-controls=菜单id）
+        if (menu.id) {
+          var byControls = document.querySelector('[aria-controls~="' + menu.id + '"]');
+          if (byControls) return byControls;
+        }
+        // 2) 当前展开的按钮
+        var open = document.querySelectorAll('[aria-haspopup][aria-expanded="true"]');
+        if (open.length) return open[open.length - 1];
+        // 3) 最近一次点击的元素
+        return lastTrigger;
+      }
+
+      function place(menu) {
+        if (!isVisible(menu)) return;
+        var mr = menu.getBoundingClientRect();
+        var stuck = mr.left < 4 && mr.top < 4;
+        if (!stuck && supportsAnchor()) return;   // 浏览器本来就能摆对，不干预
+
+        var trig = findTrigger(menu);
+        if (!trig) return;
+        var tr = trig.getBoundingClientRect();
+        if (tr.width < 1 && tr.height < 1) return;
+
+        var vw = window.innerWidth || 360;
+        var vh = window.innerHeight || 640;
+        var w = mr.width;
+        var h = mr.height;
+
+        var side = menu.getAttribute('data-anchor-side');
+        if (!side) side = (tr.top + tr.height / 2 > vh * 0.6) ? 'top' : 'bottom';
+        var align = menu.getAttribute('data-anchor-align') || 'end';
+
+        var left = (align === 'start') ? tr.left : (tr.right - w);
+        var top = (side === 'top') ? (tr.top - h - 6) : (tr.bottom + 6);
+
+        left = Math.max(8, Math.min(left, vw - w - 8));
+        top = Math.max(8, Math.min(top, vh - h - 8));
+
+        menu.style.position = 'fixed';
+        menu.style.left = left + 'px';
+        menu.style.top = top + 'px';
+        menu.style.right = 'auto';
+        menu.style.bottom = 'auto';
+        menu.style.margin = '0';
+      }
+
+      function scan() {
+        var menus = document.querySelectorAll('[role="menu"],[data-anchor-side]');
+        for (var i = 0; i < menus.length; i++) place(menus[i]);
+      }
+
+      var queued = false;
+      function schedule() {
+        if (queued) return;
+        queued = true;
+        requestAnimationFrame(function () { queued = false; scan(); });
+      }
+
+      try {
+        new MutationObserver(schedule).observe(document.documentElement, {
+          childList: true, subtree: true,
+          attributes: true, attributeFilter: ['style', 'class', 'data-anchor-side', 'aria-expanded']
+        });
+      } catch (e) {}
+      setInterval(scan, 500);
+    })();
+    """#
+
     static let bootstrapJS = #"""
     (function () {
       if (window.__dshmBridgeInstalled) return;
@@ -833,6 +940,12 @@ struct WebContainer: NSViewRepresentable {
         controller.addUserScript(WKUserScript(
             source: Self.bootstrapJS,
             injectionTime: .atDocumentStart,
+            forMainFrameOnly: true
+        ))
+        // 菜单定位兜底：要等 body 存在，所以放在 documentEnd；内部还有 MutationObserver 持续生效
+        controller.addUserScript(WKUserScript(
+            source: Self.anchorFixJS,
+            injectionTime: .atDocumentEnd,
             forMainFrameOnly: true
         ))
 

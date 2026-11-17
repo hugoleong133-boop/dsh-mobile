@@ -47,3 +47,5 @@ diag*.jsonl
 *.orig*
 macos/build/
 macos/*.zip
+macos/stage/
+macos/*.dmg

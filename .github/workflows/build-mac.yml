@@ -1,9 +1,9 @@
 name: build-mac
 
-# 在 GitHub 的 macOS runner 上编译 DSHDesktop，产出未签名的 .app（zip 打包）。
+# 在 GitHub 的 macOS runner 上编译 DSHDesktop，产出未签名的 .app（打 DMG）。
 # 目标：Intel（x86_64）与 Apple Silicon（arm64）都能跑 —— 由 ARCHS 决定通用二进制。
 # 触发：Actions 页面手动 Run workflow，或 push 到 macos/**。
-# 产物：Artifacts → DSHDesktop-mac → DSHDesktop-mac.zip
+# 产物：Artifacts → DSHDesktop-mac → DSHDesktop-mac.dmg
 
 on:
   workflow_dispatch:
@@ -73,7 +73,10 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-      - name: Package APP
+      # 用 DMG 而不是 zip：zip 对中文文件名需要 UTF-8 标志位，
+      # ditto/zip 在部分情况下不写这个标志，解压出来会变成乱码目录名。
+      # hdiutil 走 HFS+/APFS，文件名原生支持 Unicode，不会出错。
+      - name: Package DMG
         working-directory: macos
         run: |
           set -euo pipefail
@@ -92,20 +95,21 @@ jobs:
             echo "::error::产物里没有 x86_64，Intel Mac 装不上"
             exit 1
           }
-          # 把 .app 改名成中文，Finder 里看到的就是「天機系統」
-          BUNDLE="天機系統.app"
-          rm -rf "$BUNDLE"
-          cp -R "$APP" "$BUNDLE"
-          echo "--- 改名后 ---"
-          ls -ld "$BUNDLE"
-          rm -f DSHDesktop-mac.zip
-          /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$BUNDLE" DSHDesktop-mac.zip
-          ls -lh DSHDesktop-mac.zip
-          shasum -a 256 DSHDesktop-mac.zip
+          # 组装 DMG 内容：改名后的 app + 指向「应用程序」的快捷方式
+          STAGE="stage"
+          rm -rf "$STAGE"
+          mkdir -p "$STAGE"
+          cp -R "$APP" "$STAGE/天機系統.app"
+          ln -s /Applications "$STAGE/Applications"
+          ls -la "$STAGE"
+          rm -f DSHDesktop-mac.dmg
+          hdiutil create -volname "天機系統" -srcfolder "$STAGE" -ov -format UDZO DSHDesktop-mac.dmg
+          ls -lh DSHDesktop-mac.dmg
+          shasum -a 256 DSHDesktop-mac.dmg
 
       - uses: actions/upload-artifact@v4
         with:
           name: DSHDesktop-mac
-          path: macos/DSHDesktop-mac.zip
+          path: macos/DSHDesktop-mac.dmg
           if-no-files-found: error
           retention-days: 30

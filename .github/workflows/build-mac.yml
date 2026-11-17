@@ -92,8 +92,14 @@ jobs:
             echo "::error::产物里没有 x86_64，Intel Mac 装不上"
             exit 1
           }
+          # 把 .app 改名成中文，Finder 里看到的就是「天機系統」
+          BUNDLE="天機系統.app"
+          rm -rf "$BUNDLE"
+          cp -R "$APP" "$BUNDLE"
+          echo "--- 改名后 ---"
+          ls -ld "$BUNDLE"
           rm -f DSHDesktop-mac.zip
-          /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$APP" DSHDesktop-mac.zip
+          /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$BUNDLE" DSHDesktop-mac.zip
           ls -lh DSHDesktop-mac.zip
           shasum -a 256 DSHDesktop-mac.zip
 

@@ -23,12 +23,13 @@ struct RootView: View {
     }
 }
 
-// MARK: - 寤惰繜鑳跺泭
+// MARK: - 延迟胶囊
 
 struct LatencyBadge: View {
     let latency: Int?
     var connected: Bool = false
-    /// 浼氳瘽椤垫妸鑿滃崟骞惰繘杩欎釜鑳跺泭锛岀敤涓€涓皬鎻愮ず鐐硅〃鏄庡彲鐐?    var showsMenuHint: Bool = false
+    /// 会话页把菜单并进这个胶囊，用一个小提示点表明可点
+    var showsMenuHint: Bool = false
 
     var body: some View {
         HStack(spacing: 6) {
@@ -50,8 +51,8 @@ struct LatencyBadge: View {
     }
 
     private var label: String {
-        if !connected { return "鏈繛鎺? }
-        guard let latency else { return "杩炴帴涓€? }
+        if !connected { return "未连接" }
+        guard let latency else { return "连接中…" }
         return "\(latency) ms"
     }
 
@@ -64,7 +65,8 @@ struct LatencyBadge: View {
     }
 }
 
-// MARK: - 棣栭〉锛氶€夎蒋浠?
+// MARK: - 首页：选软件
+
 struct HomeView: View {
     @EnvironmentObject private var store: EndpointStore
     @State private var path: [UUID] = []
@@ -98,12 +100,12 @@ struct HomeView: View {
                                             renameTarget = target.id
                                             renameText = target.name
                                         } label: {
-                                            Label("閲嶅懡鍚?, systemImage: "pencil")
+                                            Label("重命名", systemImage: "pencil")
                                         }
                                         Button(role: .destructive) {
                                             pendingDelete = target.id
                                         } label: {
-                                            Label("鍒犻櫎", systemImage: "trash")
+                                            Label("删除", systemImage: "trash")
                                         }
                                     }
                                 }
@@ -129,32 +131,32 @@ struct HomeView: View {
                 .environmentObject(store)
         }
         .alert(
-            "閲嶅懡鍚?,
+            "重命名",
             isPresented: Binding(
                 get: { renameTarget != nil },
                 set: { if !$0 { renameTarget = nil } }
             )
         ) {
-            TextField("鍚嶇О", text: $renameText)
-            Button("鍙栨秷", role: .cancel) { renameTarget = nil }
-            Button("淇濆瓨") {
+            TextField("名称", text: $renameText)
+            Button("取消", role: .cancel) { renameTarget = nil }
+            Button("保存") {
                 if let id = renameTarget { store.rename(id, to: renameText) }
                 renameTarget = nil
             }
         }
         .confirmationDialog(
-            "鍒犻櫎杩欎釜杞欢锛熷搴旂殑閫氶亾鍦板潃浼氫竴璧峰垹闄わ紝涓嶅彲鎭㈠銆?,
+            "删除这个软件？对应的通道地址会一起删除，不可恢复。",
             isPresented: Binding(
                 get: { pendingDelete != nil },
                 set: { if !$0 { pendingDelete = nil } }
             ),
             titleVisibility: .visible
         ) {
-            Button("鍒犻櫎", role: .destructive) {
+            Button("删除", role: .destructive) {
                 if let id = pendingDelete { store.delete(id) }
                 pendingDelete = nil
             }
-            Button("鍙栨秷", role: .cancel) { pendingDelete = nil }
+            Button("取消", role: .cancel) { pendingDelete = nil }
         }
     }
 
@@ -199,10 +201,10 @@ struct HomeView: View {
             Image(systemName: "square.stack.3d.up.slash")
                 .font(.system(size: 40, weight: .light))
                 .foregroundStyle(.secondary.opacity(0.5))
-            Text("杩樻病鏈夋坊鍔犺蒋浠?)
+            Text("还没有添加软件")
                 .font(.system(size: 16, weight: .medium))
                 .foregroundStyle(.white.opacity(0.85))
-            Text("鐐瑰乏涓婅 + 娣诲姞涓€涓?)
+            Text("点左上角 + 添加一个")
                 .font(.system(size: 13))
                 .foregroundStyle(.secondary)
             Spacer()
@@ -238,7 +240,7 @@ struct TargetCard: View {
                 Text(target.name)
                     .font(.system(size: 17, weight: .semibold))
                     .foregroundStyle(.white)
-                Text(target.configuredCount > 0 ? "\(target.configuredCount) 鏉￠€氶亾宸查厤缃? : "鏈厤缃湴鍧€")
+                Text(target.configuredCount > 0 ? "\(target.configuredCount) 条通道已配置" : "未配置地址")
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
             }
@@ -261,7 +263,7 @@ struct TargetCard: View {
     }
 }
 
-// MARK: - 杞欢绠＄悊
+// MARK: - 软件管理
 
 struct AppManagerView: View {
     @EnvironmentObject private var store: EndpointStore
@@ -294,7 +296,7 @@ struct AppManagerView: View {
                                         Text(target.name)
                                             .foregroundStyle(.white)
                                         Spacer()
-                                        Text("\(target.configuredCount) 閫氶亾")
+                                        Text("\(target.configuredCount) 通道")
                                             .font(.system(size: 12))
                                             .foregroundStyle(.secondary)
                                     }
@@ -313,10 +315,10 @@ struct AppManagerView: View {
                                     .font(.system(size: 14, weight: .semibold))
                                     .foregroundStyle(Palette.accents[0])
                                     .frame(width: 30, height: 30)
-                                TextField("鏂板杞欢鍚嶇О", text: $newName)
+                                TextField("新增软件名称", text: $newName)
                                     .textFieldStyle(.plain)
                                     .foregroundStyle(.white)
-                                Button("娣诲姞") {
+                                Button("添加") {
                                     store.addTarget(name: newName)
                                     newName = ""
                                 }
@@ -329,22 +331,22 @@ struct AppManagerView: View {
                     .scrollContentBackground(.hidden)
                 }
             }
-            .navigationTitle("杞欢")
+            .navigationTitle("软件")
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("瀹屾垚") { dismiss() }
+                    Button("完成") { dismiss() }
                 }
             }
             .alert(
-                "閲嶅懡鍚?,
+                "重命名",
                 isPresented: Binding(
                     get: { renameTarget != nil },
                     set: { if !$0 { renameTarget = nil } }
                 )
             ) {
-                TextField("鍚嶇О", text: $renameText)
-                Button("鍙栨秷", role: .cancel) { renameTarget = nil }
-                Button("淇濆瓨") {
+                TextField("名称", text: $renameText)
+                Button("取消", role: .cancel) { renameTarget = nil }
+                Button("保存") {
                     if let id = renameTarget { store.rename(id, to: renameText) }
                     renameTarget = nil
                 }
@@ -354,7 +356,7 @@ struct AppManagerView: View {
     }
 }
 
-// MARK: - 閫氶亾閫夋嫨
+// MARK: - 通道选择
 
 struct ChannelListView: View {
     let targetId: UUID
@@ -407,7 +409,7 @@ struct ChannelListView: View {
                 }
             }
         }
-        .navigationTitle(target?.name ?? "閫氶亾")
+        .navigationTitle(target?.name ?? "通道")
         .tint(Palette.accents[0])
         .sheet(isPresented: $showSettings) {
             ChannelSettingsView(targetId: targetId)
@@ -442,7 +444,7 @@ struct ChannelRow: View {
                     Text(channel.title)
                         .font(.system(size: 16, weight: .semibold))
                         .foregroundStyle(.white.opacity(configured ? 1 : 0.55))
-                    Text(url?.absoluteString ?? "鏈缃?)
+                    Text(url?.absoluteString ?? "未设置")
                         .font(.system(size: 11, design: .monospaced))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -469,7 +471,7 @@ struct ChannelRow: View {
     }
 }
 
-// MARK: - 閫氶亾璁剧疆
+// MARK: - 通道设置
 
 struct ChannelSettingsView: View {
     let targetId: UUID
@@ -480,7 +482,7 @@ struct ChannelSettingsView: View {
     @State private var error: String?
 
     private var targetName: String {
-        store.target(targetId)?.name ?? "閫氶亾"
+        store.target(targetId)?.name ?? "通道"
     }
 
     var body: some View {
@@ -497,7 +499,7 @@ struct ChannelSettingsView: View {
                                         .foregroundStyle(.white)
                                     Spacer()
                                     if !(drafts[channel] ?? "").isEmpty {
-                                        Button("娓呴櫎") { drafts[channel] = "" }
+                                        Button("清除") { drafts[channel] = "" }
                                             .font(.system(size: 12))
                                             .foregroundStyle(.secondary)
                                     }
@@ -530,10 +532,10 @@ struct ChannelSettingsView: View {
             .navigationTitle(targetName)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("鍙栨秷") { dismiss() }
+                    Button("取消") { dismiss() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("淇濆瓨") { save() }
+                    Button("保存") { save() }
                         .font(.system(size: 16, weight: .semibold))
                 }
             }
@@ -570,7 +572,7 @@ struct ChannelSettingsView: View {
     }
 }
 
-// MARK: - 浼氳瘽
+// MARK: - 会话
 
 struct SessionView: View {
     @EnvironmentObject private var store: EndpointStore
@@ -607,7 +609,8 @@ struct SessionView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
 
-            // 椤堕儴锛氱綉缁滅姸鎬佽兌鍥婃湰韬氨鏄彍鍗曞叆鍙?            Button {
+            // 顶部：网络状态胶囊本身就是菜单入口
+            Button {
                 showMenu = true
             } label: {
                 LatencyBadge(latency: store.latency, connected: true, showsMenuHint: true)
@@ -616,24 +619,24 @@ struct SessionView: View {
             .padding(.top, 10)
         }
         .confirmationDialog("DSH Desktop", isPresented: $showMenu, titleVisibility: .visible) {
-            Button("閲嶆柊鍔犺浇") {
+            Button("重新加载") {
                 failure = nil
                 reloadToken += 1
             }
 
             if let first = alternates.first {
-                Button("鍒囨崲鍒?\(first.title)") { switchTo(first) }
+                Button("切换到 \(first.title)") { switchTo(first) }
             }
             if alternates.count > 1 {
-                Button("鍒囨崲鍒?\(alternates[1].title)") { switchTo(alternates[1]) }
+                Button("切换到 \(alternates[1].title)") { switchTo(alternates[1]) }
             }
 
-            Button("鍒囨崲杞欢") { store.disconnect() }
+            Button("切换软件") { store.disconnect() }
             if let id = store.activeTargetId {
-                Button("閫氶亾璁剧疆") { channelSettingsTarget = id; showSettings = true }
+                Button("通道设置") { channelSettingsTarget = id; showSettings = true }
             }
-            if let url { Button("鍦?Safari 鎵撳紑") { NSWorkspace.shared.open(url) } }
-            Button("鍙栨秷", role: .cancel) {}
+            if let url { Button("在 Safari 打开") { NSWorkspace.shared.open(url) } }
+            Button("取消", role: .cancel) {}
         } message: {
             Text(menuTitle)
         }
@@ -645,7 +648,7 @@ struct SessionView: View {
         }
     }
 
-    /// 褰撳墠杞欢涓嬨€侀櫎褰撳墠閫氶亾澶栥€佸凡缁忛厤濂藉湴鍧€鐨勯€氶亾锛堟渶澶氫袱鏉★級
+    /// 当前软件下、除当前通道外、已经配好地址的通道（最多两条）
     private var alternates: [DSHChannel] {
         guard let targetId = store.activeTargetId else { return [] }
         return DSHChannel.allCases.compactMap { channel in
@@ -664,7 +667,7 @@ struct SessionView: View {
     private var menuTitle: String {
         let name = store.activeTarget?.name ?? ""
         let channel = store.activeChannel?.title ?? ""
-        return "\(name) 路 \(channel) 路 \(AppInfo.versionLabel)"
+        return "\(name) · \(channel) · \(AppInfo.versionLabel)"
     }
 }
 
@@ -678,7 +681,7 @@ struct FailurePanel: View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 8) {
                 Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-                Text("鎵撲笉寮€杩欎釜鍦板潃").font(.system(size: 17, weight: .semibold))
+                Text("打不开这个地址").font(.system(size: 17, weight: .semibold))
             }
             Text(message).font(.system(size: 13)).foregroundStyle(.secondary)
             Text(url.absoluteString)
@@ -686,9 +689,9 @@ struct FailurePanel: View {
                 .foregroundStyle(.secondary)
                 .textSelection(.enabled)
             HStack(spacing: 10) {
-                Button("閲嶈瘯", action: onRetry).buttonStyle(.borderedProminent)
-                Button("鍒囨崲閫氶亾", action: onSwitch).buttonStyle(.bordered)
-                Button("鍦?Safari 鎵撳紑") { NSWorkspace.shared.open(url) }.buttonStyle(.bordered)
+                Button("重试", action: onRetry).buttonStyle(.borderedProminent)
+                Button("切换通道", action: onSwitch).buttonStyle(.bordered)
+                Button("在 Safari 打开") { NSWorkspace.shared.open(url) }.buttonStyle(.bordered)
             }
             .font(.system(size: 14))
         }
@@ -698,7 +701,8 @@ struct FailurePanel: View {
     }
 }
 
-// MARK: - WebView 澹筹紙macOS锛?
+// MARK: - WebView 壳（macOS）
+
 struct WebContainer: NSViewRepresentable {
     let url: URL
     let reloadToken: Int
@@ -786,6 +790,8 @@ struct WebContainer: NSViewRepresentable {
         return true;
       }
 
+      // 页面上出现「按住说话」面板时，把面板尺寸贴合到输入框：
+      // DSH 自带的 composer 在窄窗口下会出现多余留白，这里用联合矩形收窄。
       document.addEventListener('click', function (event) {
         var node = event.target;
         while (node && node !== document && !(node.tagName === 'A' && node.hasAttribute && node.hasAttribute('download'))) {
@@ -818,6 +824,7 @@ struct WebContainer: NSViewRepresentable {
 
     func makeNSView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
+        // 让页面里的音频/视频不需要额外点击就能播放（自动朗读依赖这一条）
         config.mediaTypesRequiringUserActionForPlayback = []
 
         let controller = config.userContentController
@@ -833,7 +840,9 @@ struct WebContainer: NSViewRepresentable {
         view.navigationDelegate = context.coordinator
         view.uiDelegate = context.coordinator
         view.allowsBackForwardNavigationGestures = false
-        // macOS 涓?WKWebView 娌℃湁 isOpaque / backgroundColor锛?        // 鍙兘閫氳繃绉佹湁鐨?drawsBackground 鍏虫帀锛岄伩鍏嶉〉闈㈡湭鍔犺浇鏃堕棯鐧藉簳銆?        view.setValue(false, forKey: "drawsBackground")
+        // macOS 的 WKWebView 没有 isOpaque / backgroundColor，
+        // 用私有的 drawsBackground 关掉，避免页面未加载时闪白底。
+        view.setValue(false, forKey: "drawsBackground")
         context.coordinator.load(url, token: reloadToken, in: view)
         return view
     }
@@ -851,7 +860,8 @@ struct WebContainer: NSViewRepresentable {
     final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
         private let parent: WebContainer
         private var loadedKey = ""
-        /// 鏈鍔犺浇椤甸潰鐨?host锛岀敤浜庡獟浣撻噰闆嗘巿鏉冪櫧鍚嶅崟锛堟崲椤佃璺熺潃鎹級銆?        private var trustedHost = ""
+        /// 本次加载页面的 host，用于媒体采集授权白名单（换页要跟着换）。
+        private var trustedHost = ""
         private var pingTimer: Timer?
 
         init(_ parent: WebContainer) {
@@ -867,7 +877,8 @@ struct WebContainer: NSViewRepresentable {
             view.load(request)
         }
 
-        // MARK: - 楹﹀厠椋?/ 鎽勫儚澶?
+        // MARK: - 麦克风 / 摄像头
+
         func webView(_ webView: WKWebView,
                      requestMediaCapturePermissionFor origin: WKSecurityOrigin,
                      initiatedByFrame frame: WKFrameInfo,
@@ -924,18 +935,20 @@ struct WebContainer: NSViewRepresentable {
             stopPinging()
             parent.onLatency(nil)
 
-            var text = "\(ns.localizedDescription)锛圽(ns.domain) \(ns.code)锛?
+            var text = "\(ns.localizedDescription)（\(ns.domain) \(ns.code)）"
             if ns.code == -1022 || ns.code == -1004 || ns.code == -1009 || ns.code == -1001 {
-                text += "\n\n妫€鏌ョ數鑴戜笂 8765 鏄惁鍦ㄨ窇锛屼互鍙婅繖涓綉缁滆兘涓嶈兘鍒拌鍦板潃銆?
+                text += "\n\n检查电脑上 8765 是否在跑，以及这个网络能不能到该地址。"
             }
             if ns.code == -1202 || ns.code == -1200 || ns.code == -9807 {
-                text += "\n\n杩欏彴鐢佃剳鐢ㄧ殑鏄嚜绛捐瘉涔︺€侫pp 宸茬粡鏀捐浜嗙鏈夊湴鍧€鐨勮嚜绛捐瘉涔︼紝"
-                text += "杩樻姤閿欑殑璇濊鏄庤姹傛病璧板埌 App 鐨勬斁琛岄€昏緫鈥斺€旇瘯璇曞湪 Safari 閲屾墦寮€鍚屼竴鍦板潃銆?
+                text += "\n\n这台电脑用的是自签证书。App 已经放行了私有地址的自签证书，"
+                text += "还报错的话说明请求没走到 App 的放行逻辑——试试在 Safari 里打开同一地址。"
             }
             parent.failure = text
         }
 
-        /// 鎺ュ彈绉佹湁鍦板潃鐨勮嚜绛捐瘉涔︺€?        /// 鍙绉佹湁缃戞鍜?tailnet 鍩熷悕鏀捐锛屽叕缃戝煙鍚嶇収甯镐弗鏍兼牎楠屻€?        func webView(_ webView: WKWebView,
+        /// 接受私有地址的自签证书。
+        /// 只对私有网段和 tailnet 域名放行，公网域名照常严格校验。
+        func webView(_ webView: WKWebView,
                      didReceive challenge: URLAuthenticationChallenge,
                      completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
             guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
@@ -977,7 +990,10 @@ struct WebContainer: NSViewRepresentable {
                 return
             }
 
-            // 琛ㄥ崟鎻愪氦锛圥OST锛変竴寰嬫斁琛屻€?            // 瀵?targetFrame == nil 鐨勫鑸噸鏂?load() 浼氫涪鎺?body锛?            // 閰嶅椤电殑 PIN 琛ㄥ崟灏辨槸杩欐牱琚悶鎺夌殑銆?            let httpMethod = (navigationAction.request.httpMethod ?? "GET").uppercased()
+            // 表单提交（POST）一律放行。
+            // 对 targetFrame == nil 的导航重新 load() 会丢掉 body，
+            // 配对页的 PIN 表单就是这样被吞掉的。
+            let httpMethod = (navigationAction.request.httpMethod ?? "GET").uppercased()
             if httpMethod == "POST" {
                 decisionHandler(.allow)
                 return
@@ -1006,10 +1022,11 @@ struct WebContainer: NSViewRepresentable {
             return nil
         }
 
-        // MARK: 鏂囦欢閫夋嫨
+        // MARK: 文件选择
 
-        /// macOS 涓?WKOpenPanelParameters 浠?10.12 灏辨湁锛屼笉闇€瑕佸彲鐢ㄦ€ф爣娉ㄣ€?        /// 鍙寜 accept 鏀剁獎 NSOpenPanel 鐨勭被鍨嬶紱鐩稿唽/鐩告満鍦?macOS 涓婃病鏈夊搴旀蹇碉紝
-        /// 鎻愮ず銆岀収鐗囧浘搴撱€嶅湪杩欓噷灏辨槸銆屽浘鐗囥€嶆枃浠剁被鍨嬨€?        func webView(_ webView: WKWebView,
+        /// macOS 上 WKOpenPanelParameters 从 10.12 就有。
+        /// 按 accept 收窄 NSOpenPanel 的类型；读不到 accept 就不过滤。
+        func webView(_ webView: WKWebView,
                      runOpenPanelWith parameters: WKOpenPanelParameters,
                      initiatedByFrame frame: WKFrameInfo,
                      completionHandler: @escaping ([URL]?) -> Void) {
@@ -1034,8 +1051,9 @@ struct WebContainer: NSViewRepresentable {
             }
         }
 
-        /// acceptMIMETypes 涓嶅湪鍏紑澶存枃浠堕噷锛圵KOpenPanelParametersPrivate.h 閲岀殑
-        /// `_acceptedMIMETypes`锛夛紝杩愯鏃舵帰涓€涓嬪啀 KVC锛涜涓嶅埌灏辫繑鍥炵┖ = 涓嶈繃婊ゃ€?        private static func acceptedContentTypes(_ parameters: WKOpenPanelParameters) -> [UTType] {
+        /// acceptMIMETypes 不在公开头文件里（WKOpenPanelParametersPrivate.h 的
+        /// `_acceptedMIMETypes`），运行时探一下再 KVC；读不到返回空 = 不过滤。
+        private static func acceptedContentTypes(_ parameters: WKOpenPanelParameters) -> [UTType] {
             let object = parameters as NSObject
             for key in ["acceptMIMETypes", "_acceptedMIMETypes"] {
                 guard object.responds(to: NSSelectorFromString(key)) else { continue }
@@ -1054,7 +1072,8 @@ struct WebContainer: NSViewRepresentable {
             return []
         }
 
-        // MARK: 娑堟伅妗?
+        // MARK: 消息桥
+
         func userContentController(_ userContentController: WKUserContentController,
                                    didReceive message: WKScriptMessage) {
             if message.name == "dshmPing" {
@@ -1071,7 +1090,8 @@ struct WebContainer: NSViewRepresentable {
             let name = rawName.contains(".") ? rawName : rawName + ".bin"
             guard let bytes = Data(base64Encoded: data, options: .ignoreUnknownCharacters) else { return }
 
-            // macOS 涓婄敤銆屽瓨鍌ㄤ负銆嶅璇濇锛屾浛浠?iOS 鐨勫垎浜潰鏉裤€?            let panel = NSSavePanel()
+            // macOS 上用「存储为」对话框，替代 iOS 的分享面板。
+            let panel = NSSavePanel()
             panel.nameFieldStringValue = name
             panel.canCreateDirectories = true
             let handler: (NSApplication.ModalResponse) -> Void = { response in
@@ -1085,8 +1105,11 @@ struct WebContainer: NSViewRepresentable {
             }
         }
 
-        // MARK: 鍘熺敓瀵硅瘽妗?
-        private func present(_ alert: NSAlert, in webView: WKWebView?, then completion: @escaping (NSApplication.ModalResponse) -> Void) {
+        // MARK: 原生对话框
+
+        private func present(_ alert: NSAlert,
+                             in webView: WKWebView?,
+                             then completion: @escaping (NSApplication.ModalResponse) -> Void) {
             if let window = webView?.window ?? NSApp.keyWindow {
                 alert.beginSheetModal(for: window, completionHandler: completion)
             } else {
@@ -1100,7 +1123,7 @@ struct WebContainer: NSViewRepresentable {
                      completionHandler: @escaping () -> Void) {
             let alert = NSAlert()
             alert.messageText = message
-            alert.addButton(withTitle: "濂?)
+            alert.addButton(withTitle: "好")
             present(alert, in: webView) { _ in completionHandler() }
         }
 
@@ -1110,8 +1133,8 @@ struct WebContainer: NSViewRepresentable {
                      completionHandler: @escaping (Bool) -> Void) {
             let alert = NSAlert()
             alert.messageText = message
-            alert.addButton(withTitle: "纭畾")
-            alert.addButton(withTitle: "鍙栨秷")
+            alert.addButton(withTitle: "确定")
+            alert.addButton(withTitle: "取消")
             present(alert, in: webView) { response in
                 completionHandler(response == .alertFirstButtonReturn)
             }
@@ -1127,8 +1150,8 @@ struct WebContainer: NSViewRepresentable {
             let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 280, height: 24))
             field.stringValue = defaultText ?? ""
             alert.accessoryView = field
-            alert.addButton(withTitle: "纭畾")
-            alert.addButton(withTitle: "鍙栨秷")
+            alert.addButton(withTitle: "确定")
+            alert.addButton(withTitle: "取消")
             present(alert, in: webView) { response in
                 completionHandler(response == .alertFirstButtonReturn ? field.stringValue : nil)
             }

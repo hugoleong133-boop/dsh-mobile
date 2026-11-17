@@ -862,6 +862,29 @@ const server = ARGS.tlsCert
   )
   : http.createServer(handle);
 
+// 网络栈被重置时（开/关 VPN、网卡重启、休眠唤醒）监听 socket 会报错。
+// 没有这个处理器时，Node 会抛出未处理的 'error' 事件，server 停止监听 ——
+// 进程还在，但端口没了，手机端表现为「连不上」。
+// 这里接住错误并在稍后重新绑定，让代理自己扛过去，不必依赖外部看门狗。
+server.on('error', (err) => {
+  const code = (err && err.code) || '';
+  console.error([server]  );
+  if (['EADDRNOTAVAIL', 'ENETDOWN', 'EINVAL', 'EADDRINUSE', 'ENETRESET'].includes(code)) {
+    setTimeout(() => {
+      try { server.close(); } catch {}
+      setTimeout(() => {
+        try {
+          server.listen(ARGS.port, ARGS.listen, () => {
+            console.error('[server] 重新绑定成功，端口', ARGS.port);
+          });
+        } catch (e) {
+          console.error('[server] 重绑失败', e && e.message);
+        }
+      }, 1200);
+    }, 600);
+  }
+});
+
 server.on('upgrade', handleUpgrade);
 server.on('connection', (socket) => {
   // 手机切网络、锁屏都会半路中止连接；未监听的 'error' 会直接杀死整个守护进程

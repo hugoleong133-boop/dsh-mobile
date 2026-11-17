@@ -50,10 +50,17 @@ if (-not (Test-Path $boot)) {
     exit 1
 }
 
-Start-Process -FilePath 'powershell.exe' `
-    -ArgumentList '-NoProfile', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass',
-                  '-File', $boot, '-Port', $Port `
-    -WorkingDirectory $here
+# 优先拉起常驻任务：它的进程链挂在 services.exe 下面，
+# 不受 DSH 会话和用户进程 Job 的影响。没有这个任务时才退回 boot.ps1。
+$resident = & schtasks /Query /TN "dsh-mobile-resident" 2>$null
+if ($LASTEXITCODE -eq 0) {
+    & schtasks /Run /TN "dsh-mobile-resident" 2>$null | Out-Null
+} else {
+    Start-Process -FilePath 'powershell.exe' `
+        -ArgumentList '-NoProfile', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass',
+                      '-File', $boot, '-Port', $Port `
+        -WorkingDirectory $here
+}
 
 # 给代理 15 秒起来
 for ($i = 0; $i -lt 15; $i++) {

@@ -1,0 +1,105 @@
+name: build-mac
+
+# 在 GitHub 的 macOS runner 上编译 DSHDesktop，产出未签名的 .app（zip 打包）。
+# 目标：Intel（x86_64）与 Apple Silicon（arm64）都能跑 —— 由 ARCHS 决定通用二进制。
+# 触发：Actions 页面手动 Run workflow，或 push 到 macos/**。
+# 产物：Artifacts → DSHDesktop-mac → DSHDesktop-mac.zip
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'macos/**'
+      - '.github/workflows/build-mac.yml'
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          xcodebuild -version
+          xcrun --sdk macosx --show-sdk-version
+          sw_vers
+
+      - name: Ensure XcodeGen
+        run: |
+          command -v xcodegen >/dev/null 2>&1 || brew install xcodegen || true
+          xcodegen --version
+
+      - name: Generate project
+        working-directory: macos
+        run: |
+          set -euo pipefail
+          xcodegen generate
+          xcodebuild -project DSHDesktop.xcodeproj -list
+
+      - name: Build (unsigned, universal)
+        working-directory: macos
+        run: |
+          set +e
+          xcodebuild \
+            -project DSHDesktop.xcodeproj \
+            -scheme DSHDesktop \
+            -configuration Release \
+            -derivedDataPath build \
+            -destination 'generic/platform=macOS' \
+            CURRENT_PROJECT_VERSION="$(git rev-parse --short=7 HEAD)" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            ARCHS="x86_64 arm64" \
+            ONLY_ACTIVE_ARCH=NO \
+            build 2>&1 | tee build.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            echo "::error::xcodebuild exited with $status"
+            grep -E "error: " build.log | head -30 | while IFS= read -r line; do
+              echo "::error::$line"
+            done
+          fi
+          exit "$status"
+
+      - name: Keep build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mac-build-log
+          path: macos/build.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Package APP
+        working-directory: macos
+        run: |
+          set -euo pipefail
+          APP="build/Build/Products/Release/DSHDesktop.app"
+          if [ ! -d "$APP" ]; then
+            echo "app bundle missing; products tree:"
+            find build/Build/Products -maxdepth 3 -name '*.app' -print || true
+            exit 1
+          fi
+          echo "--- bundle id ---"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Contents/Info.plist" || true
+          echo "--- architectures (必须是 x86_64 + arm64) ---"
+          lipo -info "$APP/Contents/MacOS/DSHDesktop" || true
+          echo "--- 校验 x86_64 确实存在 ---"
+          lipo -archs "$APP/Contents/MacOS/DSHDesktop" | grep -q x86_64 || {
+            echo "::error::产物里没有 x86_64，Intel Mac 装不上"
+            exit 1
+          }
+          rm -f DSHDesktop-mac.zip
+          /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$APP" DSHDesktop-mac.zip
+          ls -lh DSHDesktop-mac.zip
+          shasum -a 256 DSHDesktop-mac.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DSHDesktop-mac
+          path: macos/DSHDesktop-mac.zip
+          if-no-files-found: error
+          retention-days: 30

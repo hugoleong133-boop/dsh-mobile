@@ -45,3 +45,5 @@ dsh.css
 certs*/
 diag*.jsonl
 *.orig*
+macos/build/
+macos/*.zip

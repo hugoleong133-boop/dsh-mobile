@@ -1,0 +1,45 @@
+name: DSHDesktop
+options:
+  bundleIdPrefix: local.dshm
+  deploymentTarget:
+    macOS: "13.0"
+  createIntermediateGroups: true
+  groupSortPosition: top
+  generateEmptyDirectories: false
+
+targets:
+  DSHDesktop:
+    type: application
+    platform: macOS
+    sources:
+      - path: DSHDesktop
+        # Info.plist 通过 INFOPLIST_FILE 指定，不能再当资源进 Copy Bundle Resources，
+        # 否则报 "Multiple commands produce Info.plist"
+        excludes:
+          - "Info.plist"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: local.dshm.desktop
+        PRODUCT_NAME: DSHDesktop
+        MARKETING_VERSION: "1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        INFOPLIST_FILE: DSHDesktop/Info.plist
+        SWIFT_VERSION: "5.9"
+        MACOSX_DEPLOYMENT_TARGET: "13.0"
+        ENABLE_HARDENED_RUNTIME: "NO"
+        CODE_SIGN_IDENTITY: ""
+        CODE_SIGNING_REQUIRED: "NO"
+        CODE_SIGNING_ALLOWED: "NO"
+        # Intel 与 Apple Silicon 都要能跑：产通用二进制
+        ARCHS: "x86_64 arm64"
+        ONLY_ACTIVE_ARCH: "NO"
+
+schemes:
+  DSHDesktop:
+    build:
+      targets:
+        DSHDesktop: all
+    run:
+      config: Release
+    archive:
+      config: Release

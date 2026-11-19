@@ -781,6 +781,14 @@ struct WebContainer: NSViewRepresentable {
         var stuck = mr.left < 4 && mr.top < 4;
         if (!stuck && supportsAnchor()) return;   // 浏览器本来就能摆对，不干预
 
+        // 兜底：万一毛玻璃/半透明底色没生效，给一个不透明底，避免文字穿透
+        try {
+          var bg = getComputedStyle(menu).backgroundColor;
+          if (!bg || bg === 'transparent' || bg === 'rgba(0, 0, 0, 0)') {
+            menu.style.backgroundColor = 'rgba(28, 28, 33, 0.98)';
+          }
+        } catch (e) {}
+
         var trig = findTrigger(menu);
         if (!trig) return;
         var tr = trig.getBoundingClientRect();
@@ -795,8 +803,27 @@ struct WebContainer: NSViewRepresentable {
         if (!side) side = (tr.top + tr.height / 2 > vh * 0.6) ? 'top' : 'bottom';
         var align = menu.getAttribute('data-anchor-align') || 'end';
 
+        // 先算上下可用空间，装不下就往另一边放；两边都不够就限制高度 + 内部滚动
+        var spaceAbove = tr.top - 16;
+        var spaceBelow = vh - tr.bottom - 16;
+        var preferTop = (side === 'top');
+        var space = preferTop ? spaceAbove : spaceBelow;
+        if (space < 220) {
+          var other = preferTop ? spaceBelow : spaceAbove;
+          if (other > space) {
+            preferTop = !preferTop;
+            space = other;
+          }
+        }
+        var cap = Math.max(160, space - 8);
+        if (h > cap) {
+          menu.style.maxHeight = cap + 'px';
+          menu.style.overflowY = 'auto';
+          h = cap;
+        }
+
         var left = (align === 'start') ? tr.left : (tr.right - w);
-        var top = (side === 'top') ? (tr.top - h - 6) : (tr.bottom + 6);
+        var top = preferTop ? (tr.top - h - 6) : (tr.bottom + 6);
 
         left = Math.max(8, Math.min(left, vw - w - 8));
         top = Math.max(8, Math.min(top, vh - h - 8));
@@ -953,9 +980,13 @@ struct WebContainer: NSViewRepresentable {
         view.navigationDelegate = context.coordinator
         view.uiDelegate = context.coordinator
         view.allowsBackForwardNavigationGestures = false
-        // macOS 的 WKWebView 没有 isOpaque / backgroundColor，
-        // 用私有的 drawsBackground 关掉，避免页面未加载时闪白底。
-        view.setValue(false, forKey: "drawsBackground")
+        // 注意：这里不能关掉 drawsBackground。
+        // 关掉之后 WebKit 的 backdrop-filter（毛玻璃）会失效，
+        // 菜单、浮层这类半透明面板就变成「透底」——底下文字会穿透上来。
+        // 改用公开属性把「页面绘制前的底色」设为深色，既能避免闪白，也不影响模糊。
+        view.underPageBackgroundColor = NSColor(
+            calibratedRed: 0.055, green: 0.055, blue: 0.075, alpha: 1
+        )
         context.coordinator.load(url, token: reloadToken, in: view)
         return view
     }

@@ -66,6 +66,9 @@ jobs:
 
       - name: Keep build log
         if: always()
+        # 这一步只是留档，失败不应该中断整个流程
+        # （GitHub 的 artifact 服务偶发超时，曾因此把打包步骤跳过）
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: mac-build-log

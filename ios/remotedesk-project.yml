@@ -6,6 +6,21 @@ options:
   createIntermediateGroups: true
   groupSortPosition: top
 
+settings:
+  base:
+    # 证书 provisioning profile 匹配的 Bundle ID（Hugo·ipad(多开)）
+    PRODUCT_BUNDLE_IDENTIFIER: app.eggplant7110.sagittarius1813
+    MARKETING_VERSION: "1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    TARGETED_DEVICE_FAMILY: "1,2"
+    SWIFT_VERSION: "5.9"
+    IPHONEOS_DEPLOYMENT_TARGET: "16.0"
+    ENABLE_BITCODE: "NO"
+    ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+    CODE_SIGN_IDENTITY: ""
+    CODE_SIGNING_REQUIRED: "NO"
+    CODE_SIGNING_ALLOWED: "NO"
+
 targets:
   RemoteDeskClient:
     type: application
@@ -15,20 +30,10 @@ targets:
         excludes:
           - "Info.plist"
           - "RemoteDeskClient.entitlements"
+      - path: Assets.xcassets
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: local.rd.client
-        PRODUCT_NAME: RemoteDesk
-        MARKETING_VERSION: "1.0"
-        CURRENT_PROJECT_VERSION: "1"
         INFOPLIST_FILE: RemoteDeskClient/Info.plist
-        TARGETED_DEVICE_FAMILY: "1,2"
-        SWIFT_VERSION: "5.9"
-        IPHONEOS_DEPLOYMENT_TARGET: "16.0"
-        ENABLE_BITCODE: "NO"
-        CODE_SIGN_IDENTITY: ""
-        CODE_SIGNING_REQUIRED: "NO"
-        CODE_SIGNING_ALLOWED: "NO"
 
 schemes:
   RemoteDeskClient:

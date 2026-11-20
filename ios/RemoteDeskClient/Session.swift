@@ -11,6 +11,7 @@ final class Session: ObservableObject {
     @Published var connected = false
     @Published var statusText = "未连接"
     @Published var fps: Double = 0
+    @Published var toastMessage: String? = nil
 
     let displayLayer = AVSampleBufferDisplayLayer()
     let touchRelay = TouchRelay()
@@ -90,6 +91,18 @@ final class Session: ObservableObject {
     private var framesInWindow = 0
 
     private func onPacket(_ buf: [UInt8]) {
+        // 剪贴板（16 字节头 + UTF-8 文本，Host 端可能分片）
+        if buf.count >= 16, Protocol.getUInt32(buf, 0) == Protocol.clipboardMagic, buf[5] == 5 {
+            let source = buf[6]
+            if source == 2 {
+                // Host → iOS
+                if let text = clipAsm.push(buf) {
+                    applyRemoteClipboard(text)
+                }
+            }
+            return
+        }
+
         if let (kind, frameId, value) = Protocol.parseControl(buf) {
             switch kind {
             case .ping:
@@ -129,6 +142,72 @@ final class Session: ObservableObject {
                     self.framesInWindow += 1
                 }
             }
+        }
+    }
+
+    // MARK: - 剪贴板同步
+
+    private let clipAsm = ClipboardAssembler()
+    private var lastClipboard: String?
+    private var clipboardEcho: String?
+    private var clipboardSeq: UInt32 = 0
+
+    /// 是否启用剪贴板同步。
+    public var ClipboardSync = true
+
+    /// 检测本机剪贴板变化并推给 Host。由统计定时器每秒调用。
+    public func pollClipboard() {
+        guard ClipboardSync, connected, udp != nil else { return }
+        let text = UIPasteboard.general.string ?? ""
+        guard !text.isEmpty, text != lastClipboard else { return }
+        lastClipboard = text
+        if text == clipboardEcho { clipboardEcho = nil; return }
+
+        let bytes = Array(text.utf8)
+        guard bytes.count <= ClipboardPacket.maxTextBytes else { return }
+        clipboardSeq &+= 1
+
+        // 按 MTU 分片（与 Windows 端 ClipboardPacket.CreateDatagrams 对齐）
+        let mtu = 1200, headerLen = 16
+        let chunk = mtu - headerLen
+        var off = 0
+        while off < bytes.count || (off == 0 && bytes.isEmpty) {
+            let len = min(chunk, bytes.count - off)
+            var pkt = [UInt8](repeating: 0, count: headerLen + len)
+            putClipboardHeader(&pkt, seq: clipboardSeq, total: bytes.count)
+            if len > 0 {
+                pkt.replaceSubrange(headerLen..<(headerLen + len), with: bytes[off..<(off + len)])
+            }
+            send(pkt)
+            off += len
+            if bytes.isEmpty { break }
+        }
+        ClipboardSent += 1
+    }
+
+    public var ClipboardSent: Int = 0
+    public var ClipboardReceived: Int = 0
+
+    private func putClipboardHeader(_ b: inout [UInt8], seq: UInt32, total: Int) {
+        // magic RDCB LE: 52 44 43 42
+        b[0] = 0x52; b[1] = 0x44; b[2] = 0x43; b[3] = 0x42
+        b[4] = 1                      // version
+        b[5] = 5                      // Clipboard
+        b[6] = 1                      // source = client
+        b[7] = 1                      // UTF-8
+        Protocol.putUInt32(seq, &b, 8)
+        Protocol.putInt32(Int32(total), &b, 12)
+    }
+
+    /// 把远端剪贴板写到本机 UIPasteboard。
+    private func applyRemoteClipboard(_ text: String) {
+        guard ClipboardSync, !text.isEmpty, text != lastClipboard else { return }
+        lastClipboard = text
+        clipboardEcho = text
+        DispatchQueue.main.async {
+            UIPasteboard.general.string = text
+            self.ClipboardReceived += 1
+            self.toastMessage = "已同步远端剪贴板：\(text.prefix(20))"
         }
     }
 
@@ -181,6 +260,9 @@ final class Session: ObservableObject {
             }
             self.framesInWindow = 0
             self.lastFpsCalc = now
+
+            // 顺带检查本机剪贴板，有变化就推给 Host
+            self.pollClipboard()
         }
     }
 

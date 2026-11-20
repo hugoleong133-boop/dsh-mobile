@@ -1,9 +1,9 @@
 name: build-remotedesk-ipa
 
-# 在 GitHub macOS runner 上编译 RemoteDesk iOS 客户端，产出未签名 IPA。
+# 在 GitHub macOS runner 上编译 RemoteDesk iOS 客户端，并用仓库 secrets 里的
+# 证书（RD_P12_BASE64 / RD_P12_PASSWORD / RD_PROV_BASE64）签名，产出已签名 IPA。
 # 触发：Actions 页面手动 Run，或 push 到 ios/RemoteDeskClient/** 与本 workflow。
-# 产物：Artifacts → RemoteDeskClient-unsigned → RemoteDeskClient-unsigned.ipa
-# 下载后在 Windows 用 AltStore / 爱思助手 / 牛蛙助手签名安装。
+# 产物：Artifacts → RemoteDeskClient-signed → RemoteDeskClient.ipa
 
 on:
   workflow_dispatch:
@@ -73,28 +73,88 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+      - name: Decode signing material
+        working-directory: ios
+        run: |
+          set -euo pipefail
+          echo "${{ secrets.RD_P12_BASE64 }}" | base64 -d > Hugo-ipad.p12
+          echo "${{ secrets.RD_PROV_BASE64 }}" | base64 -d > Hugo-ipad.mobileprovision
+          ls -la Hugo-ipad.p12 Hugo-ipad.mobileprovision
+
+      - name: Sign IPA
+        working-directory: ios
+        env:
+          P12_PASSWORD: ${{ secrets.RD_P12_PASSWORD }}
+        run: |
+          set -euo pipefail
+          APP="build/Build/Products/Release-iphoneos/RemoteDesk.app"
+          if [ ! -d "$APP" ]; then
+            echo "app bundle missing:"
+            find build/Build/Products -maxdepth 3 -name '*.app' -print || true
+            exit 1
+          fi
+
+          # 1. 从 provision 提取 entitlements（application-identifier / team-identifier 等）
+          security cms -D -i Hugo-ipad.mobileprovision > prov.plist
+          /usr/libexec/PlistBuddy -x -o \
+            -c 'Print :Entitlements' prov.plist > entitlements.plist 2>/dev/null || \
+          python3 -c "
+import plistlib
+with open('prov.plist','rb') as f: d = plistlib.load(f)
+with open('entitlements.plist','wb') as f: plistlib.dump(d['Entitlements'], f)
+"
+          echo "--- entitlements ---"
+          cat entitlements.plist
+
+          # 2. 创建临时 keychain 并导入证书
+          KEYCHAIN=sign-$(date +%s).keychain
+          KEYCHAIN_PASS=signing-$(date +%s)
+          security create-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN"
+          security set-keychain-settings -t 3600 "$KEYCHAIN"
+          security import Hugo-ipad.p12 -k "$KEYCHAIN" -P "$P12_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASS" "$KEYCHAIN" >/dev/null
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+
+          # 3. 找签名身份
+          IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN" | grep -o '"iPhone[^"]*"' | head -1 | tr -d '"')
+          echo "签名身份: $IDENTITY"
+          if [ -z "$IDENTITY" ]; then
+            echo "::error::找不到签名身份"
+            exit 1
+          fi
+
+          # 4. 嵌入 provisioning profile
+          cp Hugo-ipad.mobileprovision "$APP/embedded.mobileprovision"
+
+          # 5. codesign 重签（替换旧签名）
+          rm -rf "$APP/_CodeSignature"
+          codesign --force --sign "$IDENTITY" --entitlements entitlements.plist \
+            --timestamp=none "$APP"
+
+          # 6. 验证
+          codesign --verify --deep "$APP" && echo "签名验证通过"
+          codesign -dvv "$APP" 2>&1 | head -20 || true
+
+          # 7. 清理 keychain
+          security delete-keychain "$KEYCHAIN" || true
+
       - name: Package IPA
         working-directory: ios
         run: |
           set -euo pipefail
           APP="build/Build/Products/Release-iphoneos/RemoteDesk.app"
-          if [ ! -d "$APP" ]; then
-            echo "app bundle missing; products tree:"
-            find build/Build/Products -maxdepth 3 -name '*.app' -print || true
-            exit 1
-          fi
           /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist" || true
           lipo -info "$APP/RemoteDesk" || true
-          rm -rf Payload RemoteDeskClient-unsigned.ipa
+          rm -rf Payload RemoteDeskClient.ipa
           mkdir -p Payload
           cp -R "$APP" Payload/
-          /usr/bin/zip -qry RemoteDeskClient-unsigned.ipa Payload
-          ls -lh RemoteDeskClient-unsigned.ipa
-          shasum -a 256 RemoteDeskClient-unsigned.ipa
+          /usr/bin/zip -qry RemoteDeskClient.ipa Payload
+          ls -lh RemoteDeskClient.ipa
+          shasum -a 256 RemoteDeskClient.ipa
 
       - uses: actions/upload-artifact@v4
         with:
-          name: RemoteDeskClient-unsigned
-          path: ios/RemoteDeskClient-unsigned.ipa
+          name: RemoteDeskClient-signed
+          path: ios/RemoteDeskClient.ipa
           if-no-files-found: error
           retention-days: 30

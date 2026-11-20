@@ -94,15 +94,9 @@ jobs:
             exit 1
           fi
 
-          # 1. 从 provision 提取 entitlements（application-identifier / team-identifier 等）
+          # 1. 从 provision 提取 entitlements
           security cms -D -i Hugo-ipad.mobileprovision > prov.plist
-          /usr/libexec/PlistBuddy -x -o \
-            -c 'Print :Entitlements' prov.plist > entitlements.plist 2>/dev/null || \
-          python3 -c "
-import plistlib
-with open('prov.plist','rb') as f: d = plistlib.load(f)
-with open('entitlements.plist','wb') as f: plistlib.dump(d['Entitlements'], f)
-"
+          /usr/libexec/PlistBuddy -x -c 'Print :Entitlements' prov.plist > entitlements.plist
           echo "--- entitlements ---"
           cat entitlements.plist
 

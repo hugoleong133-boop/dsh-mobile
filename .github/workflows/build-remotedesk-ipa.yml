@@ -1,0 +1,100 @@
+name: build-remotedesk-ipa
+
+# 在 GitHub macOS runner 上编译 RemoteDesk iOS 客户端，产出未签名 IPA。
+# 触发：Actions 页面手动 Run，或 push 到 ios/RemoteDeskClient/** 与本 workflow。
+# 产物：Artifacts → RemoteDeskClient-unsigned → RemoteDeskClient-unsigned.ipa
+# 下载后在 Windows 用 AltStore / 爱思助手 / 牛蛙助手签名安装。
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'ios/RemoteDeskClient/**'
+      - 'ios/remotedesk-project.yml'
+      - '.github/workflows/build-remotedesk-ipa.yml'
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+          command -v xcodegen || echo "xcodegen not preinstalled"
+
+      - name: Ensure XcodeGen
+        run: |
+          command -v xcodegen >/dev/null 2>&1 || brew install xcodegen || true
+          xcodegen --version
+
+      - name: Generate project
+        working-directory: ios
+        run: |
+          set -euo pipefail
+          xcodegen generate --spec remotedesk-project.yml
+          xcodebuild -project RemoteDeskClient.xcodeproj -list
+
+      - name: Build (unsigned)
+        working-directory: ios
+        run: |
+          set +e
+          xcodebuild \
+            -project RemoteDeskClient.xcodeproj \
+            -scheme RemoteDeskClient \
+            -sdk iphoneos \
+            -configuration Release \
+            -derivedDataPath build \
+            -destination 'generic/platform=iOS' \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            ONLY_ACTIVE_ARCH=NO \
+            build 2>&1 | tee build.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            echo "::error::xcodebuild exited with $status"
+            grep -E "error: " build.log | head -25 | while IFS= read -r line; do
+              echo "::error::$line"
+            done
+          fi
+          exit "$status"
+
+      - name: Keep build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-remotedesk
+          path: ios/build.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Package IPA
+        working-directory: ios
+        run: |
+          set -euo pipefail
+          APP="build/Build/Products/Release-iphoneos/RemoteDesk.app"
+          if [ ! -d "$APP" ]; then
+            echo "app bundle missing; products tree:"
+            find build/Build/Products -maxdepth 3 -name '*.app' -print || true
+            exit 1
+          fi
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist" || true
+          lipo -info "$APP/RemoteDesk" || true
+          rm -rf Payload RemoteDeskClient-unsigned.ipa
+          mkdir -p Payload
+          cp -R "$APP" Payload/
+          /usr/bin/zip -qry RemoteDeskClient-unsigned.ipa Payload
+          ls -lh RemoteDeskClient-unsigned.ipa
+          shasum -a 256 RemoteDeskClient-unsigned.ipa
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: RemoteDeskClient-unsigned
+          path: ios/RemoteDeskClient-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 30

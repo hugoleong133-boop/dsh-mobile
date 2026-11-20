@@ -1,0 +1,41 @@
+name: RemoteDeskClient
+options:
+  bundleIdPrefix: local.rd
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+  groupSortPosition: top
+
+targets:
+  RemoteDeskClient:
+    type: application
+    platform: iOS
+    sources:
+      - path: RemoteDeskClient
+        excludes:
+          - "Info.plist"
+          - "RemoteDeskClient.entitlements"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: local.rd.client
+        PRODUCT_NAME: RemoteDesk
+        MARKETING_VERSION: "1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        INFOPLIST_FILE: RemoteDeskClient/Info.plist
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SWIFT_VERSION: "5.9"
+        IPHONEOS_DEPLOYMENT_TARGET: "16.0"
+        ENABLE_BITCODE: "NO"
+        CODE_SIGN_IDENTITY: ""
+        CODE_SIGNING_REQUIRED: "NO"
+        CODE_SIGNING_ALLOWED: "NO"
+
+schemes:
+  RemoteDeskClient:
+    build:
+      targets:
+        RemoteDeskClient: all
+    run:
+      config: Release
+    archive:
+      config: Release

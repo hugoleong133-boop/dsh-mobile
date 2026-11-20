@@ -145,9 +145,7 @@ final class Session: ObservableObject {
                 ok = true
             }
         }
-        var sa = sockaddr()
-        memcpy(&sa, &sin, MemoryLayout<sockaddr_in>.size)
-        remoteAddr = sa
+        remoteAddr = sin
     }
 
     // MARK: - UDP 接收线程

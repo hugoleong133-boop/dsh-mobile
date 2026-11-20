@@ -162,10 +162,8 @@ final class Session: ObservableObject {
             while self.udpRunning {
                 var fromAddr = sockaddr()
                 var fromLen = socklen_t(MemoryLayout<sockaddr>.size)
-                let n = withUnsafeMutablePointer(to: &buf) {
-                    $0.withMemoryRebound(to: CChar.self, capacity: buf.count) { p in
-                        recvfrom(fd, p, buf.count, 0, &fromAddr, &fromLen)
-                    }
+                let n = buf.withUnsafeMutableBytes { bufPtr in
+                    recvfrom(fd, bufPtr.baseAddress, buf.count, 0, &fromAddr, &fromLen)
                 }
                 if n <= 0 {
                     if errno == EAGAIN || errno == EWOULDBLOCK { continue }

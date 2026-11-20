@@ -164,7 +164,8 @@ final class Session: ObservableObject {
         if text == clipboardEcho { clipboardEcho = nil; return }
 
         let bytes = Array(text.utf8)
-        guard bytes.count <= ClipboardPacket.maxTextBytes else { return }
+        // 与 Windows 端 ClipboardPacket.MaxTextBytes 一致：64 KB 上限
+        guard bytes.count <= 64 * 1024 else { return }
         clipboardSeq &+= 1
 
         // 按 MTU 分片（与 Windows 端 ClipboardPacket.CreateDatagrams 对齐）

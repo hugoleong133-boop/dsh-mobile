@@ -87,7 +87,7 @@ jobs:
           P12_PASSWORD: ${{ secrets.RD_P12_PASSWORD }}
         run: |
           set -euo pipefail
-          APP="build/Build/Products/Release-iphoneos/RemoteDesk.app"
+          APP=$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' | head -1)
           if [ ! -d "$APP" ]; then
             echo "app bundle missing:"
             find build/Build/Products -maxdepth 3 -name '*.app' -print || true
@@ -136,7 +136,7 @@ jobs:
         working-directory: ios
         run: |
           set -euo pipefail
-          APP="build/Build/Products/Release-iphoneos/RemoteDesk.app"
+          APP=$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' | head -1)
           /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist" || true
           lipo -info "$APP/RemoteDesk" || true
           rm -rf Payload RemoteDeskClient.ipa

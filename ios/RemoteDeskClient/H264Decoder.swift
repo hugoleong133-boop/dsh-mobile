@@ -5,14 +5,17 @@ import CoreMedia
 /// H.264 Annex B 解码器（VideoToolbox 硬解）。
 /// 输入：Annex B access unit（起始码分隔，可能含 SPS/PPS/IDR）
 /// 输出：CMSampleBuffer（可直接喂 AVSampleBufferDisplayLayer 渲染）
+///
+/// 使用 iOS 15+ 的 outputHandler 变体：
+///   VTDecompressionSessionCreate(outputCallback: nil)
+///   VTDecompressionSessionDecodeFrame(... frameRefcon: outputHandler:)
+/// 不再需要 VTDecompressionOutputCallbackRecord 老式回调。
 final class H264Decoder {
 
     private var session: VTDecompressionSession?
     private var formatDesc: CMVideoFormatDescription?
     private var sps: [UInt8] = []
     private var pps: [UInt8] = []
-    private var lastOutput: CMSampleBuffer?
-
     private var frameIndex: Int64 = 0
 
     init?(width: Int, height: Int) {
@@ -22,20 +25,16 @@ final class H264Decoder {
             kCVPixelBufferHeightKey as String: max(height, 1),
             kCVPixelBufferIOSurfacePropertiesKey as String: [:],
         ]
-        var cb: VTDecompressionSessionCallbackRecord = VTDecompressionSessionCallbackRecord()
-        cb.decompressionOutputCallback = { _, _, _, _, _, imageBuffer, _, _ in
-            // 输出回调为空实现：结果由 decodeFrame 的 VTDecompressionSessionDecodeFrame
-            // 配合 outputHandler 拿到（iOS 15+ 用 DecodeFrameWithOutputHandler 更简单，
-            // 这里保持兼容走传统回调，实际取帧见下方）。
-        }
         var s: VTDecompressionSession?
         let status = VTDecompressionSessionCreate(
-            allocator: nil, formatDescription: nil,
+            allocator: nil,
+            formatDescription: nil,
             decoderSpecification: [
                 kVTVideoDecoderSpecification_EnableHardwareAcceleratedVideoDecoder as String: true
             ] as CFDictionary,
             imageBufferAttributes: attrs as CFDictionary,
-            outputCallback: &cb, decompressionSessionOut: &s)
+            outputCallback: nil,
+            decompressionSessionOut: &s)
         guard status == noErr, let session = s else { return nil }
         self.session = session
     }
@@ -46,6 +45,8 @@ final class H264Decoder {
 
     /// 喂一个 Annex B access unit，返回可渲染的 CMSampleBuffer（或 nil）。
     func decode(_ annexB: [UInt8]) -> CMSampleBuffer? {
+        guard let session = session else { return nil }
+
         // 1. 拆 NAL
         var nals: [[UInt8]] = []
         var i = 0
@@ -57,10 +58,6 @@ final class H264Decoder {
                 while end + 3 < n {
                     if annexB[end] == 0 && annexB[end + 1] == 0 && annexB[end + 2] == 1 { break }
                     end += 1
-                }
-                // 吞掉可能的 4 字节起始码
-                if end + 3 < n && annexB[end] == 0 && annexB[end + 1] == 0 && annexB[end + 2] == 0 && annexB[end + 3] == 1 {
-                    // 处理在下面统一做
                 }
                 let nal = Array(annexB[start..<end])
                 if !nal.isEmpty { nals.append(nal) }
@@ -91,9 +88,9 @@ final class H264Decoder {
             rebuildFormatDescription()
         }
 
-        guard let fd = formatDesc, let session = session else { return nil }
+        guard let fd = formatDesc else { return nil }
 
-        // 3. Annex B → 4 字节长度前缀（VT 需要的 avcC 格式）
+        // 3. Annex B → 4 字节长度前缀（VT 需要 avcC 格式）
         var avcc = [UInt8]()
         for nal in nals {
             var len = UInt32(nal.count).bigEndian
@@ -114,24 +111,24 @@ final class H264Decoder {
         }
         guard let bb = block else { return nil }
 
-        var sample: CMSampleBuffer?
         let pts = CMTime(value: frameIndex, timescale: 60)
         frameIndex += 1
         var timing = CMSampleTimingInfo(duration: CMTime(value: 1, timescale: 60),
                                         presentationTimeStamp: pts,
                                         decodeTimeStamp: .invalid)
+        var sample: CMSampleBuffer?
         CMSampleBufferCreateReady(allocator: nil, dataBuffer: bb, formatDescription: fd,
                                   sampleCount: 1, sampleTimingEntryCount: 1,
                                   sampleTimingArray: &timing, sampleSizeEntryCount: 0,
                                   sampleSizeArray: nil, sampleBufferOut: &sample)
         guard let sb = sample else { return nil }
 
-        // 4. 解码
-        var flagsOut: VTDecodeInfoFlags = []
+        // 4. 解码（outputHandler 变体，返回解码后的 image buffer）
         var output: CMSampleBuffer?
-        let status = VTDecompressionSessionDecodeFrame(session, sampleBuffer: sb,
-                                                       flags: [._EnableTemporalProcessing],
-                                                       infoFlagsOut: &flagsOut) { status, _, imageBuffer, _, _ in
+        let status = VTDecompressionSessionDecodeFrame(
+            session, sampleBuffer: sb,
+            flags: [._EnableTemporalProcessing],
+            frameRefcon: nil) { status, _, imageBuffer, _, _ in
             guard status == noErr, let pb = imageBuffer else { return }
             var fmt: CMVideoFormatDescription?
             CMVideoFormatDescriptionCreateForImageBuffer(allocator: nil, imageBuffer: pb, formatDescriptionOut: &fmt)
@@ -151,22 +148,19 @@ final class H264Decoder {
         formatDesc = nil
         guard !sps.isEmpty, !pps.isEmpty else { return }
 
-        var spsPtr: UnsafePointer<UInt8>?
-        var ppsPtr: UnsafePointer<UInt8>?
         let spsLen = sps.count, ppsLen = pps.count
 
-        sps.withUnsafeBufferPointer { spsPtr = $0.baseAddress }
-        pps.withUnsafeBufferPointer { ppsPtr = $0.baseAddress }
-
-        var paramPointers = [spsPtr!, ppsPtr!]
-        var paramSizes = [spsLen, ppsLen]
-
-        let status = CMVideoFormatDescriptionCreateFromH264ParameterSets(
-            allocator: nil, parameterSetCount: 2,
-            parameterSetPointers: &paramPointers,
-            parameterSetSizes: &paramSizes,
-            nalUnitHeaderLength: 4, formatDescriptionOut: &formatDesc)
-
-        if status != noErr { formatDesc = nil }
+        sps.withUnsafeBufferPointer { spsPtr in
+            pps.withUnsafeBufferPointer { ppsPtr in
+                guard let sp = spsPtr.baseAddress, let pp = ppsPtr.baseAddress else { return }
+                var paramPointers = [UnsafePointer<UInt8>(sp), UnsafePointer<UInt8>(pp)]
+                var paramSizes = [spsLen, ppsLen]
+                CMVideoFormatDescriptionCreateFromH264ParameterSets(
+                    allocator: nil, parameterSetCount: 2,
+                    parameterSetPointers: &paramPointers,
+                    parameterSetSizes: &paramSizes,
+                    nalUnitHeaderLength: 4, formatDescriptionOut: &formatDesc)
+            }
+        }
     }
 }

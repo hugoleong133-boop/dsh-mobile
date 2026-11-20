@@ -126,7 +126,7 @@ final class Session: ObservableObject {
         var sin = sockaddr_in()
         sin.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
         sin.sin_family = sa_family_t(AF_INET)
-        sin.sin_port = (udpPort & 0xFF) << 8 | ((udpPort >> 8) & 0xFF)   // big-endian
+        sin.sin_port = in_port_t(bigEndian: in_port_t(truncatingIfNeeded: udpPort))
 
         var ok = false
         hostStr.withCString { cstr in
@@ -138,8 +138,9 @@ final class Session: ObservableObject {
             hints.ai_socktype = SOCK_DGRAM
             var result: UnsafeMutablePointer<addrinfo>?
             if getaddrinfo(hostStr, nil, &hints, &result) == 0, let first = result {
-                let p = first.pointee.ai_addr!.assumingMemoryBound(to: sockaddr_in.self).pointee
-                sin.sin_addr = p.sin_addr
+                var tmp = sockaddr_in()
+                memcpy(&tmp, first.pointee.ai_addr, min(Int(first.pointee.ai_addrlen), MemoryLayout<sockaddr_in>.size))
+                sin.sin_addr = tmp.sin_addr
                 freeaddrinfo(result)
                 ok = true
             }
@@ -295,10 +296,11 @@ final class Session: ObservableObject {
 
     private func send(_ bytes: [UInt8]) {
         guard udpFd >= 0 else { return }
-        var addr = remoteAddr
+        var sa = sockaddr()
+        memcpy(&sa, &remoteAddr, MemoryLayout<sockaddr_in>.size)
         bytes.withUnsafeBytes { raw in
-            withUnsafePointer(to: &addr) { sa in
-                _ = sendto(udpFd, raw.baseAddress, bytes.count, 0, sa,
+            withUnsafePointer(to: &sa) { ptr in
+                _ = sendto(udpFd, raw.baseAddress, bytes.count, 0, ptr,
                            socklen_t(MemoryLayout<sockaddr_in>.size))
             }
         }

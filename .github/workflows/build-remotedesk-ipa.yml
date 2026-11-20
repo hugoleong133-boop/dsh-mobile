@@ -102,18 +102,21 @@ jobs:
 
           # 2. 创建临时 keychain 并导入证书
           KEYCHAIN=sign-$(date +%s).keychain
-          KEYCHAIN_PASS=signing-$(date +%s)
+          KEYCHAIN_PASS=signing$(date +%s)Xy
           security create-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN"
           security set-keychain-settings -t 3600 "$KEYCHAIN"
-          security import Hugo-ipad.p12 -k "$KEYCHAIN" -P "$P12_PASSWORD" -T /usr/bin/codesign
-          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASS" "$KEYCHAIN" >/dev/null
+          security import Hugo-ipad.p12 -k "$KEYCHAIN" -P "$P12_PASSWORD" -T /usr/bin/codesign 2>&1 | tee import.log
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASS" "$KEYCHAIN" >/dev/null 2>&1
           security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
 
-          # 3. 找签名身份
+          # 3. 找签名身份（完整输出用于诊断）
+          echo "--- find-identity ---"
+          security find-identity -v -p codesigning "$KEYCHAIN" || true
+          echo "-------------------"
           IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN" | grep -o '"iPhone[^"]*"' | head -1 | tr -d '"')
-          echo "签名身份: $IDENTITY"
+          echo "签名身份: [$IDENTITY]"
           if [ -z "$IDENTITY" ]; then
-            echo "::error::找不到签名身份"
+            echo "::error::找不到签名身份（见上方 find-identity 输出）"
             exit 1
           fi
 

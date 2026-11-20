@@ -162,8 +162,9 @@ final class Session: ObservableObject {
             while self.udpRunning {
                 var fromAddr = sockaddr()
                 var fromLen = socklen_t(MemoryLayout<sockaddr>.size)
+                let bufLen = buf.count   // 闭包里不能同时访问 buf（独占访问检查）
                 let n = buf.withUnsafeMutableBytes { bufPtr in
-                    recvfrom(fd, bufPtr.baseAddress, buf.count, 0, &fromAddr, &fromLen)
+                    recvfrom(fd, bufPtr.baseAddress, bufLen, 0, &fromAddr, &fromLen)
                 }
                 if n <= 0 {
                     if errno == EAGAIN || errno == EWOULDBLOCK { continue }

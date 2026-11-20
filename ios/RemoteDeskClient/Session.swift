@@ -70,28 +70,27 @@ final class Session: ObservableObject {
         let fd = socket(AF_INET, SOCK_DGRAM, 0)
         guard fd >= 0 else { return false }
 
-        var addr = sockaddr_in()
-        addr.sin_family = sa_family_t(AF_INET)
-        addr.sin_port = 0                       // 系统分配
-        addr.sin_addr.s_addr = INADDR_ANY
-        var len = socklen_t(MemoryLayout<sockaddr_in>.size)
+        // 避免 withUnsafePointer 嵌套推断问题：memcpy 组装 sockaddr
+        var sin = sockaddr_in()
+        sin.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        sin.sin_family = sa_family_t(AF_INET)
+        sin.sin_port = 0                          // 系统分配
+        sin.sin_addr.s_addr = INADDR_ANY
 
-        let bindResult = withUnsafePointer(to: &addr) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                bind(fd, $0, len)
-            }
-        }
-        guard bindResult == 0 else { close(fd); return false }
+        var sa = sockaddr()
+        memcpy(&sa, &sin, MemoryLayout<sockaddr_in>.size)
+        let len = socklen_t(MemoryLayout<sockaddr_in>.size)
 
-        let nameResult = withUnsafeMutablePointer(to: &addr) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                getsockname(fd, $0, &len)
-            }
-        }
-        guard nameResult == 0 else { close(fd); return false }
+        guard bind(fd, &sa, len) == 0 else { close(fd); return false }
+
+        var name = sockaddr_in()
+        var nameSa = sockaddr()
+        var nameLen = socklen_t(MemoryLayout<sockaddr_in>.size)
+        guard getsockname(fd, &nameSa, &nameLen) == 0 else { close(fd); return false }
+        memcpy(&name, &nameSa, min(Int(nameLen), MemoryLayout<sockaddr_in>.size))
 
         udpFd = fd
-        udpListenPort = UInt16(bigEndian: addr.sin_port)
+        udpListenPort = UInt16(bigEndian: name.sin_port)
         return udpListenPort > 0
     }
 
@@ -124,28 +123,30 @@ final class Session: ObservableObject {
     }
 
     private func fillRemoteAddr(hostStr: String, udpPort: Int) {
-        var addr = sockaddr_in()
-        addr.sin_family = sa_family_t(AF_INET)
-        addr.sin_port = UInt16(bigEndian: UInt16(truncatingIfNeeded: udpPort))
+        var sin = sockaddr_in()
+        sin.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        sin.sin_family = sa_family_t(AF_INET)
+        sin.sin_port = (udpPort & 0xFF) << 8 | ((udpPort >> 8) & 0xFF)   // big-endian
 
         var ok = false
-        if let ip = hostStr.cString(using: .utf8) {
-            ok = inet_pton(AF_INET, ip, &addr.sin_addr) == 1
+        hostStr.withCString { cstr in
+            ok = inet_pton(AF_INET, cstr, &sin.sin_addr) == 1
         }
         if !ok {
-            // 域名解析
             var hints = addrinfo()
             hints.ai_family = AF_INET
             hints.ai_socktype = SOCK_DGRAM
             var result: UnsafeMutablePointer<addrinfo>?
             if getaddrinfo(hostStr, nil, &hints, &result) == 0, let first = result {
                 let p = first.pointee.ai_addr!.assumingMemoryBound(to: sockaddr_in.self).pointee
-                addr.sin_addr = p.sin_addr
+                sin.sin_addr = p.sin_addr
                 freeaddrinfo(result)
                 ok = true
             }
         }
-        remoteAddr = addr
+        var sa = sockaddr()
+        memcpy(&sa, &sin, MemoryLayout<sockaddr_in>.size)
+        remoteAddr = sa
     }
 
     // MARK: - UDP 接收线程
@@ -294,12 +295,11 @@ final class Session: ObservableObject {
 
     private func send(_ bytes: [UInt8]) {
         guard udpFd >= 0 else { return }
-        withUnsafePointer(to: &remoteAddr) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
-                bytes.withUnsafeBytes { raw in
-                    _ = sendto(udpFd, raw.baseAddress, bytes.count, 0, sa,
-                               socklen_t(MemoryLayout<sockaddr_in>.size))
-                }
+        var addr = remoteAddr
+        bytes.withUnsafeBytes { raw in
+            withUnsafePointer(to: &addr) { sa in
+                _ = sendto(udpFd, raw.baseAddress, bytes.count, 0, sa,
+                           socklen_t(MemoryLayout<sockaddr_in>.size))
             }
         }
     }

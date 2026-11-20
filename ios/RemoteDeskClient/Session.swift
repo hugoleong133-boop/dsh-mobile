@@ -63,13 +63,14 @@ final class Session: ObservableObject {
     }
 
     private func startUdp(host: NWEndpoint, hs: Protocol.Handshake) {
-        guard case let .hostPort(h, _) = host else { return }
-        let udp = NWConnection(host: h, port: NWEndpoint.Port(rawValue: UInt16(hs.udpPort))!, using: .udp)
+        guard case let .hostPort(hostName, _) = host else { return }
+        let udp = NWConnection(host: hostName, port: NWEndpoint.Port(rawValue: UInt16(hs.udpPort))!, using: .udp)
         udp.start(queue: queue)
         self.udp = udp
 
-        let w = hs.screenWidth, h = hs.screenHeight
-        decoder = H264Decoder(width: w, height: h)
+        let screenW = hs.screenWidth
+        let screenH = hs.screenHeight
+        decoder = H264Decoder(width: screenW, height: screenH)
 
         receiveUdp()
         startStats()

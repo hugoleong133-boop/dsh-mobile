@@ -19,12 +19,27 @@ final class H264Decoder {
 
     private let lock = NSLock()
     private var decodedImage: CVImageBuffer?
+    private let width: Int
+    private let height: Int
 
     init?(width: Int, height: Int) {
+        self.width = max(width, 1)
+        self.height = max(height, 1)
+        // session 延迟到拿到 SPS/PPS 建立 formatDesc 后再创建
+    }
+
+    deinit {
+        if let s = session { VTDecompressionSessionInvalidate(s) }
+    }
+
+    /// 有 formatDesc 后创建解码会话（formatDescription 参数非可选，必须等 SPS/PPS）。
+    private func ensureSession() {
+        guard session == nil, let fd = formatDesc else { return }
+
         let attrs: [String: Any] = [
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
-            kCVPixelBufferWidthKey as String: max(width, 1),
-            kCVPixelBufferHeightKey as String: max(height, 1),
+            kCVPixelBufferWidthKey as String: width,
+            kCVPixelBufferHeightKey as String: height,
             kCVPixelBufferIOSurfacePropertiesKey as String: [:],
         ]
 
@@ -44,7 +59,6 @@ final class H264Decoder {
         cb.decompressionOutputRefCon = UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque())
 
         var s: VTDecompressionSession?
-        let fd: CMVideoFormatDescription? = nil
         let status = VTDecompressionSessionCreate(
             allocator: kCFAllocatorDefault,
             formatDescription: fd,
@@ -54,18 +68,12 @@ final class H264Decoder {
             imageBufferAttributes: attrs as CFDictionary,
             outputCallback: &cb,
             decompressionSessionOut: &s)
-        guard status == noErr, let session = s else { return nil }
+        guard status == noErr, let session = s else { return }
         self.session = session
-    }
-
-    deinit {
-        if let s = session { VTDecompressionSessionInvalidate(s) }
     }
 
     /// 喂一个 Annex B access unit，返回可渲染的 CMSampleBuffer（或 nil）。
     func decode(_ annexB: [UInt8]) -> CMSampleBuffer? {
-        guard let session = session else { return nil }
-
         // 1. 拆 NAL
         var nals: [[UInt8]] = []
         var i = 0
@@ -107,7 +115,8 @@ final class H264Decoder {
             rebuildFormatDescription()
         }
 
-        guard let fd = formatDesc else { return nil }
+        ensureSession()
+        guard let fd = formatDesc, let session = session else { return nil }
 
         // 3. Annex B → 4 字节长度前缀（VT 需要 avcC 格式）
         var avcc = [UInt8]()

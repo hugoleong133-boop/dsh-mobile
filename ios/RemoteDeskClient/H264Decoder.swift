@@ -62,9 +62,7 @@ final class H264Decoder {
         let status = VTDecompressionSessionCreate(
             allocator: kCFAllocatorDefault,
             formatDescription: fd,
-            decoderSpecification: [
-                kVTVideoDecoderSpecification_EnableHardwareAcceleratedVideoDecoder as String: true
-            ] as CFDictionary,
+            decoderSpecification: nil,
             imageBufferAttributes: attrs as CFDictionary,
             outputCallback: &cb,
             decompressionSessionOut: &s)

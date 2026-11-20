@@ -39,7 +39,7 @@ enum Protocol {
         off += bytes.count
     }
 
-    static func writeHandshakeRequest(password: String) -> [UInt8] {
+    static func writeHandshakeRequest(password: String, udpPort: Int) -> [UInt8] {
         var buf = [UInt8](repeating: 0, count: 512)
         var off = 0
         // C# BinaryWriter.Write(string) 带 7-bit 长度前缀，所有字符串（含 "RDHS"）
@@ -48,7 +48,7 @@ enum Protocol {
         putInt32(2, &buf, off); off += 4
         writeRdsString("ios-client", &buf, &off)
         writeRdsString(password, &buf, &off)
-        putInt32(0, &buf, off); off += 4     // udpPort（回复里才填）
+        putInt32(Int32(udpPort), &buf, off); off += 4    // 本机 UDP 监听端口（Host 往回发视频）
         putInt32(0, &buf, off); off += 4
         putInt32(0, &buf, off); off += 4
         writeRdsString("", &buf, &off)

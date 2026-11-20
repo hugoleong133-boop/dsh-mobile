@@ -6,6 +6,9 @@ import UIKit
 import Combine
 
 /// iOS 主控端会话：握手 → UDP 收视频 → 解码 → 渲染；触摸/键盘 → UDP 输入。
+///
+/// UDP 数据面用 BSD socket（bind 随机端口 → 端口写进握手包 → Host 往回发视频）。
+/// 之前用 NWConnection 时握手请求里 udpPort=0，Host 不知道往哪发视频，画面黑屏。
 final class Session: ObservableObject {
 
     @Published var connected = false
@@ -16,36 +19,84 @@ final class Session: ObservableObject {
     let displayLayer = AVSampleBufferDisplayLayer()
     let touchRelay = TouchRelay()
 
-    private var udp: NWConnection?
     private var decoder: H264Decoder?
     private let queue = DispatchQueue(label: "rd.client", qos: .userInteractive)
+
+    // TCP 握手连接
+    private var tcp: NWConnection?
+
+    // UDP 数据面（BSD socket）
+    private var udpFd: Int32 = -1
+    private var udpListenPort: UInt16 = 0
+    private var remoteAddr = sockaddr_in()
+    private var udpThread: Thread?
+    private var udpRunning = false
 
     // 帧重组
     private var currentFrameId: UInt32 = 0
     private var frameParts: [Int: [UInt8]] = [:]
     private var frameCount: UInt16 = 0
-    private var frameKeyFrame = false
     private var frameChunkSize: Int = 0
     private var frameReceivedBytes = 0
 
     private var statsTimer: Timer?
-
     private var remote: Protocol.Handshake?
 
     // MARK: - 连接
 
     func connect(host: String, port: UInt16, password: String,
                  onError: @escaping (String) -> Void) {
-        let conn = NWConnection(host: NWEndpoint.Host(host), port: NWEndpoint.Port(rawValue: port)!, using: .tcp)
+        // 1. 先绑定 UDP socket，拿到本地端口写进握手包
+        guard openUdpSocket() else {
+            onError("无法创建 UDP socket")
+            return
+        }
+
+        // 2. TCP 握手（带真实 udpPort）
+        let conn = NWConnection(host: NWEndpoint.Host(host),
+                                port: NWEndpoint.Port(rawValue: port)!,
+                                using: .tcp)
+        tcp = conn
         conn.start(queue: queue)
 
-        let req = Protocol.writeHandshakeRequest(password: password)
+        let req = Protocol.writeHandshakeRequest(password: password, udpPort: Int(udpListenPort))
         conn.send(content: Data(req), completion: .contentProcessed { [weak self] _ in
-            self?.receiveHandshake(conn, onError: onError)
+            self?.receiveHandshake(conn, hostStr: host, onError: onError)
         })
     }
 
-    private func receiveHandshake(_ conn: NWConnection, onError: @escaping (String) -> Void) {
+    /// 绑定 UDP socket 并返回分配的本地端口。
+    private func openUdpSocket() -> Bool {
+        let fd = socket(AF_INET, SOCK_DGRAM, 0)
+        guard fd >= 0 else { return false }
+
+        var addr = sockaddr_in()
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = 0                       // 系统分配
+        addr.sin_addr.s_addr = INADDR_ANY
+        var len = socklen_t(MemoryLayout<sockaddr_in>.size)
+
+        let bindResult = withUnsafePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                bind(fd, $0, len)
+            }
+        }
+        guard bindResult == 0 else { close(fd); return false }
+
+        let nameResult = withUnsafeMutablePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                getsockname(fd, $0, &len)
+            }
+        }
+        guard nameResult == 0 else { close(fd); return false }
+
+        udpFd = fd
+        udpListenPort = UInt16(bigEndian: addr.sin_port)
+        return udpListenPort > 0
+    }
+
+    private func receiveHandshake(_ conn: NWConnection, hostStr: String,
+                                  onError: @escaping (String) -> Void) {
         conn.receive(minimumIncompleteLength: 1, maximumLength: 8192) { [weak self] data, _, _, err in
             guard let self = self else { return }
             guard let data = data, let hs = Protocol.readHandshakeReply([UInt8](data)) else {
@@ -53,8 +104,17 @@ final class Session: ObservableObject {
                 return
             }
             self.remote = hs
-            self.startUdp(host: conn.endpoint, hs: hs)
-            conn.cancel()
+
+            // 解析 Host 地址（供 UDP sendto 用）
+            self.fillRemoteAddr(hostStr: hostStr, udpPort: hs.udpPort)
+
+            // 启动 UDP 接收线程
+            self.startUdpReceive()
+
+            // 建解码器（尺寸来自握手）
+            self.decoder = H264Decoder(width: hs.screenWidth, height: hs.screenHeight)
+
+            conn.cancel()   // TCP 握手完成，关闭
 
             DispatchQueue.main.async {
                 self.connected = true
@@ -63,39 +123,68 @@ final class Session: ObservableObject {
         }
     }
 
-    private func startUdp(host: NWEndpoint, hs: Protocol.Handshake) {
-        guard case let .hostPort(hostName, _) = host else { return }
-        let udp = NWConnection(host: hostName, port: NWEndpoint.Port(rawValue: UInt16(hs.udpPort))!, using: .udp)
-        udp.start(queue: queue)
-        self.udp = udp
+    private func fillRemoteAddr(hostStr: String, udpPort: Int) {
+        var addr = sockaddr_in()
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = UInt16(bigEndian: UInt16(truncatingIfNeeded: udpPort))
 
-        let screenW = hs.screenWidth
-        let screenH = hs.screenHeight
-        decoder = H264Decoder(width: screenW, height: screenH)
-
-        receiveUdp()
-        startStats()
+        var ok = false
+        if let ip = hostStr.cString(using: .utf8) {
+            ok = inet_pton(AF_INET, ip, &addr.sin_addr) == 1
+        }
+        if !ok {
+            // 域名解析
+            var hints = addrinfo()
+            hints.ai_family = AF_INET
+            hints.ai_socktype = SOCK_DGRAM
+            var result: UnsafeMutablePointer<addrinfo>?
+            if getaddrinfo(hostStr, nil, &hints, &result) == 0, let first = result {
+                let p = first.pointee.ai_addr!.assumingMemoryBound(to: sockaddr_in.self).pointee
+                addr.sin_addr = p.sin_addr
+                freeaddrinfo(result)
+                ok = true
+            }
+        }
+        remoteAddr = addr
     }
 
-    private func receiveUdp() {
-        udp?.receive(minimumIncompleteLength: 1, maximumLength: 65535) { [weak self] data, _, _, err in
+    // MARK: - UDP 接收线程
+
+    private func startUdpReceive() {
+        guard udpFd >= 0, !udpRunning else { return }
+        udpRunning = true
+
+        udpThread = Thread { [weak self] in
             guard let self = self else { return }
-            if let data = data {
-                self.onPacket([UInt8](data))
+            let fd = self.udpFd
+            var buf = [UInt8](repeating: 0, count: 65536)
+
+            while self.udpRunning {
+                var fromAddr = sockaddr()
+                var fromLen = socklen_t(MemoryLayout<sockaddr>.size)
+                let n = withUnsafeMutablePointer(to: &buf) {
+                    $0.withMemoryRebound(to: CChar.self, capacity: buf.count) { p in
+                        recvfrom(fd, p, buf.count, 0, &fromAddr, &fromLen)
+                    }
+                }
+                if n <= 0 {
+                    if errno == EAGAIN || errno == EWOULDBLOCK { continue }
+                    break
+                }
+                self.onPacket(Array(buf[0..<n]))
             }
-            if err == nil { self.receiveUdp() }
         }
+        udpThread?.name = "rd-udp-rx"
+        udpThread?.start()
     }
 
     private var lastFpsCalc = Date().timeIntervalSince1970
     private var framesInWindow = 0
 
     private func onPacket(_ buf: [UInt8]) {
-        // 剪贴板（16 字节头 + UTF-8 文本，Host 端可能分片）
+        // 剪贴板（16 字节头 + UTF-8 文本）
         if buf.count >= 16, Protocol.getUInt32(buf, 0) == Protocol.clipboardMagic, buf[5] == 5 {
-            let source = buf[6]
-            if source == 2 {
-                // Host → iOS
+            if buf[6] == 2 {
                 if let text = clipAsm.push(buf) {
                     applyRemoteClipboard(text)
                 }
@@ -116,11 +205,9 @@ final class Session: ObservableObject {
         let payload = Array(buf[28..<(28 + Int(hdr.payloadLen))])
 
         if hdr.frameId != currentFrameId {
-            // 新帧开始
             frameParts.removeAll()
             currentFrameId = hdr.frameId
             frameCount = hdr.count
-            frameKeyFrame = hdr.keyFrame
             frameChunkSize = Int(hdr.chunkSize)
             frameReceivedBytes = 0
         }
@@ -152,12 +239,14 @@ final class Session: ObservableObject {
     private var clipboardEcho: String?
     private var clipboardSeq: UInt32 = 0
 
-    /// 是否启用剪贴板同步。
     public var ClipboardSync = true
+
+    public var ClipboardSent: Int = 0
+    public var ClipboardReceived: Int = 0
 
     /// 检测本机剪贴板变化并推给 Host。由统计定时器每秒调用。
     public func pollClipboard() {
-        guard ClipboardSync, connected, udp != nil else { return }
+        guard ClipboardSync, connected, udpFd >= 0 else { return }
         let text = UIPasteboard.general.string ?? ""
         guard !text.isEmpty, text != lastClipboard else { return }
         lastClipboard = text
@@ -168,7 +257,6 @@ final class Session: ObservableObject {
         guard bytes.count <= 64 * 1024 else { return }
         clipboardSeq &+= 1
 
-        // 按 MTU 分片（与 Windows 端 ClipboardPacket.CreateDatagrams 对齐）
         let mtu = 1200, headerLen = 16
         let chunk = mtu - headerLen
         var off = 0
@@ -186,21 +274,13 @@ final class Session: ObservableObject {
         ClipboardSent += 1
     }
 
-    public var ClipboardSent: Int = 0
-    public var ClipboardReceived: Int = 0
-
     private func putClipboardHeader(_ b: inout [UInt8], seq: UInt32, total: Int) {
-        // magic RDCB LE: 52 44 43 42
-        b[0] = 0x52; b[1] = 0x44; b[2] = 0x43; b[3] = 0x42
-        b[4] = 1                      // version
-        b[5] = 5                      // Clipboard
-        b[6] = 1                      // source = client
-        b[7] = 1                      // UTF-8
+        b[0] = 0x52; b[1] = 0x44; b[2] = 0x43; b[3] = 0x42   // RDCB LE
+        b[4] = 1; b[5] = 5; b[6] = 1; b[7] = 1
         Protocol.putUInt32(seq, &b, 8)
         Protocol.putInt32(Int32(total), &b, 12)
     }
 
-    /// 把远端剪贴板写到本机 UIPasteboard。
     private func applyRemoteClipboard(_ text: String) {
         guard ClipboardSync, !text.isEmpty, text != lastClipboard else { return }
         lastClipboard = text
@@ -215,7 +295,15 @@ final class Session: ObservableObject {
     // MARK: - 输入
 
     private func send(_ bytes: [UInt8]) {
-        udp?.send(content: Data(bytes), completion: .contentProcessed { _ in })
+        guard udpFd >= 0 else { return }
+        withUnsafePointer(to: &remoteAddr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
+                bytes.withUnsafeBytes { raw in
+                    _ = sendto(udpFd, raw.baseAddress, bytes.count, 0, sa,
+                               socklen_t(MemoryLayout<sockaddr_in>.size))
+                }
+            }
+        }
     }
 
     /// 触摸/键盘由 TouchRelay 回调到这里，统一发 UDP。
@@ -262,14 +350,14 @@ final class Session: ObservableObject {
             self.framesInWindow = 0
             self.lastFpsCalc = now
 
-            // 顺带检查本机剪贴板，有变化就推给 Host
             self.pollClipboard()
         }
     }
 
     func disconnect() {
         send(Protocol.control(.bye))
-        udp?.cancel()
+        udpRunning = false
+        if udpFd >= 0 { close(udpFd); udpFd = -1 }
         statsTimer?.invalidate()
         decoder = nil
         DispatchQueue.main.async {
@@ -281,15 +369,9 @@ final class Session: ObservableObject {
 
 /// 触摸 → 鼠标事件映射（iOS 手势语义）。
 final class TouchRelay {
-    /// 当前按下的鼠标键位（bit0 左、bit1 右、bit2 中）。
     var buttons: UInt8 = 0
-
-    /// 单指点击 = 左键。
     var onTap: ((CGFloat, CGFloat) -> Void)?
-    /// 双指拖 = 滚动。
     var onScroll: ((Int32) -> Void)?
-    /// 长按 = 右键。
     var onLongPress: ((CGFloat, CGFloat) -> Void)?
-    /// 移动。
     var onMove: ((CGFloat, CGFloat) -> Void)?
 }

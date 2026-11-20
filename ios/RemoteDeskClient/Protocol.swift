@@ -42,9 +42,9 @@ enum Protocol {
     static func writeHandshakeRequest(password: String) -> [UInt8] {
         var buf = [UInt8](repeating: 0, count: 512)
         var off = 0
-        buf[off] = UInt8(ascii: "R"); buf[off + 1] = UInt8(ascii: "D")
-        buf[off + 2] = UInt8(ascii: "H"); buf[off + 3] = UInt8(ascii: "S")
-        off += 4
+        // C# BinaryWriter.Write(string) 带 7-bit 长度前缀，所有字符串（含 "RDHS"）
+        // 都必须走 writeRdsString，否则 Host 解析失败（第一个字节被当长度）。
+        writeRdsString("RDHS", &buf, &off)
         putInt32(2, &buf, off); off += 4
         writeRdsString("ios-client", &buf, &off)
         writeRdsString(password, &buf, &off)
@@ -78,12 +78,18 @@ enum Protocol {
     }
 
     static func readHandshakeReply(_ buf: [UInt8]) -> Handshake? {
-        guard buf.count >= 4, buf[0] == UInt8(ascii: "R"), buf[1] == UInt8(ascii: "D"),
-              buf[2] == UInt8(ascii: "H"), buf[3] == UInt8(ascii: "S") else { return nil }
-        var off = 4
-        _ = getUInt32(buf, off); off += 4
-        _ = readRdsString(buf, &off)          // deviceId
-        _ = readRdsString(buf, &off)          // password（空）
+        var off = 0
+        // C# 字符串带 7-bit 长度前缀，跳过它再检查 "RDHS"
+        guard off < buf.count, Int(buf[off]) + off + 1 <= buf.count else { return nil }
+        let magicLen = Int(buf[off]); off += 1
+        guard off + 4 <= buf.count,
+              buf[off] == UInt8(ascii: "R"), buf[off + 1] == UInt8(ascii: "D"),
+              buf[off + 2] == UInt8(ascii: "H"), buf[off + 3] == UInt8(ascii: "S") else { return nil }
+        _ = magicLen
+        off += 4
+        _ = getUInt32(buf, off); off += 4          // version
+        _ = readRdsString(buf, &off)              // deviceId
+        _ = readRdsString(buf, &off)              // password（空）
         let udp = Int(Int32(bitPattern: getUInt32(buf, off))); off += 4
         let w = Int(Int32(bitPattern: getUInt32(buf, off))); off += 4
         let h = Int(Int32(bitPattern: getUInt32(buf, off))); off += 4

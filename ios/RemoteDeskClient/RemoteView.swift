@@ -20,7 +20,7 @@ struct RemoteView: UIViewRepresentable {
 final class RemoteUIView: UIView {
 
     private let session: Session
-    private var lastDragTranslation: CGSize = .zero
+    private var lastDragTranslation: CGPoint = .zero
     private var longPressRecognizer: UILongPressGestureRecognizer?
     private var tapRecognizer: UITapGestureRecognizer?
     private var panRecognizer: UIPanGestureRecognizer?
@@ -112,9 +112,9 @@ final class RemoteUIView: UIView {
 
     @objc private func onTwoFingerPan(_ g: UIPanGestureRecognizer) {
         let t = g.translation(in: self)
+        if g.state == .began { lastDragTranslation = .zero; return }
         let dy = t.y - lastDragTranslation.y
         lastDragTranslation = t
-        if g.state == .began { lastDragTranslation = .zero; return }
         // 向上拖 = 滚轮向上（正值）
         let lines = Int32(-dy / 3.0)
         if lines != 0 { session.sendScroll(delta: lines * 40) }

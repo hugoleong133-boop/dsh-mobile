@@ -6,10 +6,9 @@ import CoreMedia
 /// 输入：Annex B access unit（起始码分隔，可能含 SPS/PPS/IDR）
 /// 输出：CMSampleBuffer（可直接喂 AVSampleBufferDisplayLayer 渲染）
 ///
-/// 使用 iOS 15+ 的 outputHandler 变体：
-///   VTDecompressionSessionCreate(outputCallback: nil)
-///   VTDecompressionSessionDecodeFrame(... frameRefcon: outputHandler:)
-/// 不再需要 VTDecompressionOutputCallbackRecord 老式回调。
+/// 用最保守的老式回调 API（所有 iOS/macOS SDK 版本都有）：
+///   VTDecompressionSessionCreate(outputCallback:&cb)
+///   VTDecompressionSessionDecodeFrame(... frameRefcon: infoFlagsOut:)
 final class H264Decoder {
 
     private var session: VTDecompressionSession?
@@ -18,6 +17,9 @@ final class H264Decoder {
     private var pps: [UInt8] = []
     private var frameIndex: Int64 = 0
 
+    private let lock = NSLock()
+    private var decodedImage: CVImageBuffer?
+
     init?(width: Int, height: Int) {
         let attrs: [String: Any] = [
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
@@ -25,15 +27,32 @@ final class H264Decoder {
             kCVPixelBufferHeightKey as String: max(height, 1),
             kCVPixelBufferIOSurfacePropertiesKey as String: [:],
         ]
+
+        // 老式输出回调：解码器把 image buffer 经 refCon 存回 self
+        var cb = VTDecompressionOutputCallbackRecord()
+        cb.decompressionOutputCallback = {
+            (refCon: UnsafeMutableRawPointer?, _: UnsafeMutableRawPointer?,
+             status: OSStatus, _: VTDecodeInfoFlags,
+             imageBuffer: CVImageBuffer?, _: CMTime, _: CMTime) in
+            guard status == noErr, let imageBuffer = imageBuffer,
+                  let refCon = refCon else { return }
+            let decoder = Unmanaged<H264Decoder>.fromOpaque(refCon).takeUnretainedValue()
+            decoder.lock.lock()
+            decoder.decodedImage = imageBuffer
+            decoder.lock.unlock()
+        }
+        cb.decompressionOutputRefCon = UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque())
+
         var s: VTDecompressionSession?
+        let fd: CMVideoFormatDescription? = nil
         let status = VTDecompressionSessionCreate(
-            allocator: nil,
-            formatDescription: nil,
+            allocator: kCFAllocatorDefault,
+            formatDescription: fd,
             decoderSpecification: [
                 kVTVideoDecoderSpecification_EnableHardwareAcceleratedVideoDecoder as String: true
             ] as CFDictionary,
             imageBufferAttributes: attrs as CFDictionary,
-            outputCallback: nil,
+            outputCallback: &cb,
             decompressionSessionOut: &s)
         guard status == noErr, let session = s else { return nil }
         self.session = session
@@ -123,25 +142,33 @@ final class H264Decoder {
                                   sampleSizeArray: nil, sampleBufferOut: &sample)
         guard let sb = sample else { return nil }
 
-        // 4. 解码（outputHandler 变体，返回解码后的 image buffer）
-        var output: CMSampleBuffer?
-        let status = VTDecompressionSessionDecodeFrame(
-            session, sampleBuffer: sb,
-            flags: [._EnableTemporalProcessing],
-            frameRefcon: nil) { status, _, imageBuffer, _, _ in
-            guard status == noErr, let pb = imageBuffer else { return }
-            var fmt: CMVideoFormatDescription?
-            CMVideoFormatDescriptionCreateForImageBuffer(allocator: nil, imageBuffer: pb, formatDescriptionOut: &fmt)
-            if let f = fmt {
-                var out: CMSampleBuffer?
-                CMSampleBufferCreateReadyWithImageBuffer(allocator: nil, imageBuffer: pb,
-                                                         formatDescription: f,
-                                                         sampleTiming: &timing, sampleBufferOut: &out)
-                output = out
-            }
-        }
-        _ = status
-        return output
+        // 4. 老式解码：结果经 outputCallback 存到 decodedImage
+        lock.lock()
+        decodedImage = nil
+        lock.unlock()
+
+        var flagsOut = VTDecodeInfoFlags()
+        VTDecompressionSessionDecodeFrame(session, sampleBuffer: sb,
+                                          flags: [._EnableTemporalProcessing],
+                                          frameRefcon: nil,
+                                          infoFlagsOut: &flagsOut)
+
+        lock.lock()
+        let image = decodedImage
+        decodedImage = nil
+        lock.unlock()
+
+        guard let pb = image else { return nil }
+
+        var fmt: CMVideoFormatDescription?
+        CMVideoFormatDescriptionCreateForImageBuffer(allocator: nil, imageBuffer: pb, formatDescriptionOut: &fmt)
+        guard let f = fmt else { return nil }
+
+        var out: CMSampleBuffer?
+        CMSampleBufferCreateReadyWithImageBuffer(allocator: nil, imageBuffer: pb,
+                                                 formatDescription: f,
+                                                 sampleTiming: &timing, sampleBufferOut: &out)
+        return out
     }
 
     private func rebuildFormatDescription() {
